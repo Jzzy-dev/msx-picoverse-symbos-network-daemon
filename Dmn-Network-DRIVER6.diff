@@ -1,0 +1,616 @@
+--- /mnt/user-data/uploads/Dmn-Network.asm	2026-10-13 14:38:45.494657195 +0200
++++ Dmn-Network.asm	2026-10-13 21:44:23.618647000 +0200
+@@ -301,7 +301,26 @@
+ ;### PRGLNG -> load language pack
+ prglnge db ".exe",0
+ 
+-prglng  ld hl,(App_BegCode)
++prglng
++if LNGSKIP=2
++        ret                     ;direct texts, there is no pointer list and no language pack
++endif
++if LNGSKIP=1
++        ld a,(App_BnkNum)       ;no OS call - write the real text bank into every pointer entry
++        ld hl,texts_int
++        ld de,(texts_int+1)     ;address of the first string = end of the pointer list
++prglngp ld (hl),a
++        inc hl
++        inc hl
++        inc hl
++        push hl
++        or a
++        sbc hl,de
++        pop hl
++        jr c,prglngp
++        ret
++endif
++        ld hl,(App_BegCode)
+         ld de,App_BegCode
+         dec h
+         add hl,de               ;HL=code area end=path
+@@ -522,6 +541,17 @@
+         ld a,(stawinid)
+         jp SyDesktop_WINDIN
+ staupd6                         ;*** DRIVER TAB
++if DRIVER=6
++        ld a,(esp_ssidchg)      ;the access point text changed, redraw that line (control 17)
++        or a
++        jr z,staupd6a
++        xor a
++        ld (esp_ssidchg),a
++        ld e,17
++        ld a,(stawinid)
++        call SyDesktop_WINDIN
++staupd6a
++endif
+ if DRIVER=0
+         ld a,r
+         and #3f
+@@ -544,6 +574,25 @@
+         ld (hl),a
+         set 1,c
+ staupdb ld a,c
++elseif DRIVER=6
++        ld c,0                  ;ESP8266 - link is on while the network is online
++        ld a,(net_status)
++        inc a
++        jr nz,staupdl
++        ld c,32
++staupdl ld hl,esp_sta_tx        ;TX and RX stay on for a short moment after data moved
++        ld a,(hl)
++        sub 1
++        jr c,staupda
++        ld (hl),a
++        set 0,c
++staupda inc hl
++        ld a,(hl)
++        sub 1
++        jr c,staupdb
++        ld (hl),a
++        set 1,c
++staupdb ld a,c
+ elseif M4BOARD=1
+         ld a,(staupdsnw)
+         ld hl,staupdsig
+@@ -642,6 +691,13 @@
+         ld a,(stactlssl+12)
+         dec a
+         ld (cfg_slots+1),a
++if DRIVER=6
++        cp 4                    ;the list entry "-" gives 255, use sub-slot 0 then
++        jr c,staapl0
++        xor a
++        ld (cfg_slots+1),a
++staapl0 jp staapl3
++endif
+         ld ix,stabufim0
+         ld de,cfg_macadr
+         db #fd:ld l,6
+@@ -655,7 +711,7 @@
+         add ix,bc
+         db #fd:dec l
+         jr nz,staapl1
+-        call netini
++staapl3 call netini
+         ;...check if its still wrong
+         ld de,256*23+256-6
+         ld a,(stawinid)
+@@ -1115,6 +1171,50 @@
+         call netini0
+         jp cfgipr
+ 
++elseif DRIVER=6
++;### NETINI -> Initializes network hardware (ESP8266 UNAPI firmware)
++netini  xor a
++        call netini0
++        ld hl,(cfg_slots)       ;slot before the detection
++        push hl
++        xor a
++        call lowini             ;probe and find the ESP, CF=1 means no hardware
++        pop hl
++        ret c
++        ld de,(cfg_slots)
++        or a
++        sbc hl,de
++        call nz,espslt          ;a different slot was found, show it and save it
++        ld a,1
++netini0 ld (net_status),a
++        ld hl,staupdflg
++        set 3,(hl)
++        ret
++
++;### ESPSLT -> show the detected slot in the driver tab and save the configuration
++espslt  ld a,(cfg_slots+0)
++        ld (stactlpsl+12),a
++        ld a,(cfg_slots+1)
++        inc a
++        ld (stactlssl+12),a
++        jp cfgsav
++
++;### NETIPS -> read IP settings from the ESP (it does DHCP itself)
++;### called by NETPOL while net_status=1, so throttle the polling
++netipsc db 1
++netips  ld hl,netipsc
++        dec (hl)
++        ret nz
++        ld (hl),250             ;retry about every 5 seconds
++        call espips             ;fills net_ipaadr (ip,mask,gateway) and net_dnspri
++        ret c
++        ld hl,net_ipaadr        ;0.0.0.0 -> WiFi not connected yet
++        ld a,(hl):inc hl:or (hl):inc hl:or (hl):inc hl:or (hl)
++        ret z
++        ld a,-1
++        call netini0            ;status "connected"
++        jp cfgipr
++
+ elseif DRIVER=4
+ ;### NETINI -> Initializes network hardware (Net4CPC)
+ netini 	xor a
+@@ -1338,6 +1438,9 @@
+ if M4BOARD=1
+         call m4cpol
+ endif
++if DRIVER=6
++        call esppol             ;ESP8266 - collect pending TCP-open / DNS replies
++endif
+         ld hl,net_timtic
+         dec (hl)
+         jr nz,netpol5
+@@ -1365,8 +1468,8 @@
+ netpol4 push ix
+         cp 2
+         jr c,nettcp
+-        jr z,netudp
+-        jr netdns
++        jp z,netudp
++        jp netdns
+ netpol0 pop ix
+         jr netpol2
+ netpol3 dec a                       ;*** STATUS CHECK
+@@ -1434,8 +1537,64 @@
+ 
+ ;### NETUDP -> manages UDP socket
+ ;### Input      C=socket ID, IX=socket data
++if DRIVER=6
++netudps db 0,0          ;old status
++netudp  ld a,c
++        call lowust             ;A=status, BC=received bytes, IX,IY=remote IP, DE=remote port
++        or a
++        jp z,netpol0                ;in process -> skip
++        ex (sp),ix              ;ix=data record
++        ld l,(ix+sckdatsta)
++        cp l
++        jr nz,netudp1
++        ex (sp),ix              ;no overall-status change -> skip
++        jp netpol0
++netudp1 ld (netudps),hl
++        pop hl                  ;hl,iy=ip
++        push ix
++        push af
++        ld (ix+sckdatsta+0),a       ;store new status
++        ld (ix+sckdatrcv+0),c       ;store received bytes
++        ld (ix+sckdatrcv+1),b
++        ld (ix+sckdatrpo+0),e       ;store remote port
++        ld (ix+sckdatrpo+1),d
++        ld (ix+sckdatrip+0),l       ;store remote IP
++        ld (ix+sckdatrip+1),h
++        db #fd:ld a,l
++        ld (ix+sckdatrip+2),a
++        db #fd:ld a,h
++        ld (ix+sckdatrip+3),a
++        ex (sp),hl
++        ld l,h                  ;l=new status
++        pop ix                  ;ix,iy=ip
++        call netmsg0                ;prepare BC,DE,IX,IY
++        bit 7,h
++        jr z,netudp2            ;no data received -> only send "connection status" event
++        ld a,(netudps)          ;a=old status
++        bit 7,a
++        jr nz,netudp2           ;data received didn't change -> only send "connection status" event
++        ld h,a
++        push hl
++        ld l,128                ;new data received -> send "data received" event
++        call netudp3
++        pop hl
++        res 7,l
++        res 7,h
++        ld a,l                  ;test, if connection status changed
++        cp h
++        jp z,netpol0
++netudp2 res 7,l                 ;send "connection status" event
++        call netudp3
++        jp netpol0
++;l=status
++netudp3 ld a,(netpols+1)
++        or a
++        call netmsg1:db MSR_NET_UDPEVT
++        ret
++else
+ netudp  ;...
+         jr netpol0
++endif
+ 
+ ;### NETDNS -> manages DNS socket
+ ;### Input      C=socket ID, IX=socket data
+@@ -1806,18 +1965,20 @@
+ tcpsta  ld c,scktyptcp
+         call sckget
+         ret c
+-        ld c,(ix+sckdatrcv+0)
+-        ld b,(ix+sckdatrcv+1)
+-        ld e,(ix+sckdatrpo+0)
+-        ld d,(ix+sckdatrpo+1)
+-        ld l,(ix+sckdatrip+2)
+-        ld h,(ix+sckdatrip+3)
+-        push hl:pop iy
+-        ld l,(ix+sckdatrip+0)
+-        ld h,(ix+sckdatrip+1)
++        ld c,(iy+sckdatrcv+0)
++        ld b,(iy+sckdatrcv+1)
++        ld e,(iy+sckdatrpo+0)
++        ld d,(iy+sckdatrpo+1)
++        ld l,(iy+sckdatrip+0)
++        ld h,(iy+sckdatrip+1)
+         push hl
+-        ld l,(ix+sckdatsta)
++        ld l,(iy+sckdatrip+2)
++        ld h,(iy+sckdatrip+3)
++        push hl
++        ld l,(iy+sckdatsta)
++        pop iy
+         pop ix
++        or a
+         ret
+ 
+ ;### TCPSKP -> TCP skip incoming data
+@@ -1851,8 +2012,41 @@
+ ;### Output     CF=0 ok,    (netscknum)=socket
+ ;###            CF=1 error, A=error code
+ ;### Destroyed  BC,DE,HL,IX,IY
+-udpopn  ;...
++udpopn
++if DRIVER=6
++        push de                 ;e=bank
++        call netprt
++        ld a,scktypudp
++        call scknew             ;a=socket, iy=record
++        pop de
++        ret c
++        ld (iy+sckdatlpo+0),l
++        ld (iy+sckdatlpo+1),h
++        ld (iy+sckdatbnk),e
++        ld (iy+sckdatsta),3     ;idle
++        ld (iy+sckdatrcv+0),0
++        ld (iy+sckdatrcv+1),0
++        ld (udpopns),hl
++        push iy
++        push af
++        ld ix,udpopns
++        call lowuop
++        pop bc
++        pop iy
++        jr c,udpopn1
++        ld a,b
++        ld (netscknum),a
++        or a
+         ret
++udpopn1 ld (iy+sckdattyp),scktypfre     ;the ESP refused it, give the socket back
++        call sckdec
++        scf
++        ret
++udpopns dw 0
++else
++        ;...
++        ret
++endif
+ 
+ ;### UDPCLO -> UDP close session
+ ;### Input      A=socket
+@@ -1873,32 +2067,120 @@
+ ;### Output     CF=0 ok,    L=status (, BC=received bytes, IX,IY=remote IP, DE=remote port)
+ ;###            CF=1 error, A=error code
+ ;### Destroyed  BC,DE,HL,IX,IY
+-udpsta  ;...
++udpsta
++if DRIVER=6
++        ld c,scktypudp
++        call sckget
++        ret c
++        ld c,(iy+sckdatrcv+0)
++        ld b,(iy+sckdatrcv+1)
++        ld e,(iy+sckdatrpo+0)
++        ld d,(iy+sckdatrpo+1)
++        ld l,(iy+sckdatrip+2)
++        ld h,(iy+sckdatrip+3)
++        push hl
++        ld l,(iy+sckdatrip+0)
++        ld h,(iy+sckdatrip+1)
++        push hl
++        ld l,(iy+sckdatsta)
++        pop ix
++        pop iy
++        or a
++        ret
++else
++        ;...
+         ret
++endif
+ 
+ ;### UDPRCV -> UDP receive data package
+ ;### Input      A=socket, HL=memory
+ ;### Output     CF=0 ok
+ ;###            CF=1 error, A=error code
+ ;### Destroyed  BC,DE,HL,IX,IY
+-udprcv  ;...
++udprcv
++if DRIVER=6
++        push hl                 ;destination
++        ld c,scktypudp
++        call sckget             ;iy=record, a=socket
++        pop hl
++        ret c
++        bit 7,(iy+sckdatsta)    ;ZF=1 means nothing is waiting
++        ld d,a                  ;d=socket
++        ld a,neterrtes
++        scf
++        ret z
++        ld c,(iy+sckdatrcv+0)
++        ld b,(iy+sckdatrcv+1)
++        ld e,(iy+sckdatbnk)
++        call netdin
++        push iy
++        ld a,d
++        call lowurx             ;a=socket, bc=length, e=bank, hl=destination
++        pop iy
++        ld (iy+sckdatrcv+0),0
++        ld (iy+sckdatrcv+1),0
++        res 7,(iy+sckdatsta)
++        or a
+         ret
++else
++        ;...
++        ret
++endif
+ 
+ ;### UDPSND -> UDP send data package
+ ;### Input      A=socket, HL=memory, BC=length
+ ;### Output     CF=0 ok
+ ;###            CF=1 error, A=error code
+ ;### Destroyed  BC,DE,HL,IX,IY
+-udpsnd  ;...
++udpsnd
++if DRIVER=6
++        ld (udpsnds+0),ix       ;destination, 4 bytes IP and 2 bytes port
++        ld (udpsnds+2),iy
++        ld (udpsnds+4),de
++        push bc
++        push hl
++        ld c,scktypudp
++        call sckget             ;iy=record, a=socket
++        pop hl
++        pop bc
++        ret c
++        ld e,(iy+sckdatbnk)
++        ld ix,udpsnds
++        push bc
++        call lowutx             ;a=socket, hl=data, e=bank, bc=length, ix=destination
++        pop bc
++        ret c
++        call netdou
++        or a
+         ret
++udpsnds ds 6
++else
++        ;...
++        ret
++endif
+ 
+ ;### UDPSKP -> UDP skip incoming data
+ ;### Input      A=socket
+ ;### Output     CF=0 ok
+ ;###            CF=1 error, A=error code
+ ;### Destroyed  BC,DE,HL,IX,IY
+-udpskp  ;...
++udpskp
++if DRIVER=6
++        ld c,scktypudp
++        call sckget
++        ret c
++        push iy
++        call lowusk
++        pop iy
++        ld (iy+sckdatrcv+0),0
++        ld (iy+sckdatrcv+1),0
++        res 7,(iy+sckdatsta)
++        or a
++        ret
++else
++        ;...
+         ret
++endif
+ 
+ 
+ ;==============================================================================
+@@ -1944,7 +2226,27 @@
+         pop hl                      ;skip return to NETCMD, answer message will be sent later when DNSRQR has been proceeded
+         ret
+ 
+-if M4BOARD=1        ;*** HIGH LEVEL BASED (using external function) for M4Board
++if DRIVER=6         ;*** HIGH LEVEL BASED for ESP8266 UNAPI firmware (see Dmn-Network-ESP.asm)
++
++;### DNSRQS -> send DNS request
++;### Input      HL=domain name string (dot separated, 0-terminated), A=socket
++dnsrqse db 0        ;error flag
++dnsrqs  call espdns
++        ld a,neterrdto
++        jr c,dnsrqs1
++        xor a
++dnsrqs1 ld (dnsrqse),a
++        ret
++
++;### DNSRQR -> check for DNS resolve
++;### Output     CF=0 -> IP received, IX,IY=IP ; CF=1 -> A=status (0=in progress, >0=error)
++dnsrqr  ld a,(dnsrqse)
++        or a
++        scf
++        ret nz
++        jp espdnr
++
++elseif M4BOARD=1    ;*** HIGH LEVEL BASED (using external function) for M4Board
+ 
+ ;### DNSRQS -> send DNS request
+ ;### Input      HL=domain name string (dot separated, 0-terminated), A=socket
+@@ -2311,6 +2613,10 @@
+ dhcpol  ld a,-1
+         jp netini0
+ 
++elseif DRIVER=6
++dhcbeg  ret             ;ESP does DHCP
++dhcpol  ld a,-1
++        jp netini0
+ elseif M4BOARD=1
+ dhcbeg  ret             ;##!!##
+ dhcpol  ld a,-1
+@@ -2666,6 +2972,9 @@
+ elseif DRIVER=5
+ cfgdatids   db "M4 EP ESP8266":     ds 32-13
+ cfgdatver   db 1,0
++elseif DRIVER=6
++cfgdatids   db "ESP8266 UNAPI PicoVerse":ds 32-23
++cfgdatver   db 0,1
+ endif
+ 
+ cfgadr  dw cfgdatids,32+2
+@@ -3001,7 +3310,7 @@
+ ;==============================================================================
+ 
+ texts_int
+-read"Dmn-Network-i18n.asm"
++read"Dmn-Network-i18n-direct.asm"
+ texts_int_end
+ 
+ list
+@@ -3010,18 +3319,16 @@
+ 
+ ;### infobox
+ prgtxtinf1  db "Network Daemon for SymbOS",0
+-prgtxtinf2  db " Version 1.2 (Build "
+-read "..\..\..\SRC-Main\build.asm"
+-            db "pdt)",0
++prgtxtinf2  db " Version 1.2 (ESP draft)",0
+ prgtxtinf3  db " Copyright <c> 2025 SymbiosiS"
+ prgtxtinf0  db 0
+ 
+ ;### status text data
+-stamentxt11 db 6,128,-1:dw menicn_hide        +1:db 7:dw stamentxt11_poi:db 0
+-stamentxt12 db 6,128,-1:dw menicn_delete      +1:db 7:dw stamentxt12_poi:db 0
+-stamentxt13 db 6,128,-1:dw menicn_quit        +1:db 7:dw stamentxt13_poi:db 0
+-stamentxt21 db 6,128,-1:dw menicn_help        +1:db 7:dw stamentxt21_poi:db 0
+-stamentxt22 db 6,128,-1:dw menicn_about       +1:db 7:dw stamentxt22_poi:db 0
++stamentxt11 db 6,128,-1:dw menicn_hide        +1:db " Hide on startup",0
++stamentxt12 db 6,128,-1:dw menicn_delete      +1:db " Reset all connections",0
++stamentxt13 db 6,128,-1:dw menicn_quit        +1:db " Quit",0
++stamentxt21 db 6,128,-1:dw menicn_help        +1:db " Index",0
++stamentxt22 db 6,128,-1:dw menicn_about       +1:db " About",0
+ 
+ menicn_hide         db 4,8,7:dw $+7,$+4,28:db 5: db #66,#11,#11,#66, #66,#18,#81,#66, #11,#18,#81,#11, #61,#88,#88,#16, #66,#18,#81,#66, #77,#71,#17,#77, #77,#77,#77,#77
+ menicn_delete       db 4,8,7:dw $+7,$+4,28:db 5: db #ff,#66,#66,#ff, #6f,#f6,#6f,#f6, #66,#ff,#ff,#66, #66,#6f,#f6,#66, #66,#ff,#ff,#66, #6f,#f6,#6f,#f6, #ff,#66,#66,#ff
+@@ -3035,6 +3342,10 @@
+ statxttxa   db "Adapter: DenYoNet W5100",0
+ elseif DRIVER=2
+ statxttxa   db "Adapter: GR8NET W5100",0
++elseif DRIVER=6
++statxttxa   db "Adapter: ESP8266 "
++esp_dbgtxt  db "no device",0
++            ds 14
+ elseif M4BOARD=1
+ statxttxa   db "Adapter: M4 Board ESP8266",0
+ 
+@@ -3054,11 +3365,29 @@
+ statxttxa   db "Adapter: Net4CPC W5100S",0
+ endif
+ 
++if DRIVER=6
++if ESPDEBUG=1
++statxttxb   db "v"
++            db low_vermaj+48
++            db "."
++            db low_vermin+48
++            db " "
++esp_dbglog  db "no rom",0
++            ds 24
++else
+ statxttxb   db "(driver version "
+             db low_vermaj+48
+             db "."
+             db low_vermin+48
+             db ")",0
++endif
++else
++statxttxb   db "(driver version "
++            db low_vermaj+48
++            db "."
++            db low_vermin+48
++            db ")",0
++endif
+ statxttxk   db "Host: "
+ cfgbufina   ds 1+16
+ 
+@@ -3100,7 +3429,12 @@
+ statxttxo   db "RX",0
+ statxttxp   db "Collision",0
+ statxttxq   db "100mbit",0
++if DRIVER=6
++statxttxr   db "WiFi: not connected",0
++            ds 24
++else
+ statxttxr   db "MAC address",0
++endif
+ statxttxs   db "Cartridge Slot",0
+ statxttxt   db "Subslot",0
+ statxttxu   db "Card Index",0
+@@ -3174,6 +3508,8 @@
+ stawingrpc  db 30,0:dw stawindatc,0,0,4*256+3,0,0,2
+ elseif DRIVER=2
+ stawingrpc  db 30,0:dw stawindatc,0,0,4*256+3,0,0,2
++elseif DRIVER=6
++stawingrpc  db 30,0:dw stawindatc,0,0,4*256+3,0,0,2
+ elseif M4BOARD=1
+ stawingrpc  db 25,0:dw stawindatc,0,0,4*256+3,0,0,2
+ elseif DRIVER=4
+@@ -3286,6 +3622,35 @@
+ dw      0,  255*256+32, stactlim5,    85,    85,    14,    12, 0    ;input mac-5
+ dw staapl,  255*256+16, statxtbtc,   109,    85,    36,    12, 0    ;button apply
+ 
++elseif DRIVER=6     ;*** ESP8266 UNAPI (PicoVerse) ***
++
++dw      0,  255*256+10
++stawindatc0 dw          stactllg0,     9,    27,     6,     6, 0    ;display     TX
++dw      0,  255*256+ 1, stactltxl,    18,    26,    60,     8, 0    ;description TX
++dw      0,  255*256+10, stactllg0,    39,    27,     6,     6, 0    ;display     LINK
++dw      0,  255*256+ 1, stactltxm,    48,    26,    60,     8, 0    ;description LINK
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+10, stactllg0,     9,    35,     6,     6, 0    ;display     RX
++dw      0,  255*256+ 1, stactltxo,    18,    34,    60,     8, 0    ;description RX
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+ 3, stactlfre,     0,    49,   155,    57, 0    ;frame Settings
++dw      0,  255*256+ 1, stactltxs,    10,    62,    10,     8, 0    ;description slot
++dw      0,  255*256+42, stactlpsl,    69,    61,    17,    10, 0    ;PRIMARY SLOT
++dw      0,  255*256+ 1, stactltxt,    92,    62,    10,     8, 0    ;description subslot
++dw      0,  255*256+42, stactlssl,   124,    61,    17,    10, 0    ;SUBSLOT
++dw      0,  255*256+ 1, stactltxr,    10,    74,   140,     8, 0    ;note, the slot is detected automatically
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw      0,  255*256+64,         0,     0,     0,     1,     1, 0    ;-
++dw staapl,  255*256+16, statxtbtc,   109,    85,    36,    12, 0    ;button apply
++
+ elseif DRIVER=2     ;*** GR8NET *****************
+ 
+ dw      0,  255*256+10
