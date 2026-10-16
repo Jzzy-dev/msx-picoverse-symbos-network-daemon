@@ -1,6 +1,8 @@
 # msx-picoverse-symbos-network-daemon
 A network daemon for MSX machines booting Symbos using the PicoVerse2350
 
+<a href="https://msx.pics/image/xtaHE"><img src="https://msx.pics/images/2026/10/05/SL-3002.md.jpeg" alt="SL 3002" border="0"></a>
+
 # SymbOS Network Daemon driver for ESP8266 UNAPI firmware on PicoVerse 2350
 
 Status, working on MSX2 with PicoVerse 2350 (SymbOS 4.0). The daemon finds the card, gets
