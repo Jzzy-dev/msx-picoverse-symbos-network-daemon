@@ -11,7 +11,7 @@ A network daemon for MSX machines booting Symbos using the PicoVerse2350
 
 Status, working on MSX2 with PicoVerse 2350 (SymbOS 4.0). The daemon finds the card, gets
 the IP settings through DHCP from the ESP, resolves names and moves TCP data. wget and SymTel
-were used successfully. UDP works too (tested with SNTP). Driver version 0.4, shown in the Driver tab as MSX PcVrs ESP v0.4.
+were used successfully. UDP works too (tested with SNTP). Driver version 0.5, shown in the Driver tab as MSX PcVrs ESP v0.5. HTTPS (TLS) is supported through the ESP, see below and the notes there (untested at the time of writing).
 
 ## Build
 Wrapper order, constants file, Dmn-Network-head.asm, Dmn-Network-libs.asm, Dmn-Network.asm
@@ -64,6 +64,25 @@ Tested on real hardware with Net Test (World clock, SNTP).
 * The answer to UDP_SEND is waited for up to 3 seconds, the ESP can need a while.
 * Largest datagram is 576 bytes, larger ones are refused on send and cut on receive.
 
+## HTTPS / TLS
+The ESP firmware (BearSSL) can do TLS itself, TCP_OPEN has a flag for it. The SymbOS network API has no
+TLS flag, so the driver decides by port, the program just talks plain data to the daemon.
+* A client connection to port 443, 8443, 465, 993 or 995 is opened as a TLS connection. The list is
+  esp_tlsports in Dmn-Network-ESP.asm. Server connections stay plain.
+* So `http://host:443/` style access works in any program that lets you pick the port, and a program
+  that has its own https support only has to connect to port 443 and send its plain HTTP request.
+* For SNI and the name check the ESP needs the host name, the daemon only has the IP at that point.
+  The driver remembers the last four DNS answers (name and IP) and sends the name that belongs to
+  the IP. A connection by IP number without a previous name lookup has no host name, a lot of servers
+  refuse that.
+* TLSVERIFY in the wrapper. 0 (default) = encrypted, but the server certificate is not checked,
+  so nobody listening along can read the data, but a man in the middle is not noticed. 1 = the ESP
+  checks the certificate against its certificate store (certs.ar in the ESP, flashed with the firmware
+  tools), a connection then fails if the store is missing or the certificate is not known.
+* Limits of the ESP: only one TLS connection at a time, TLS 1.2 at most, the handshake takes a few
+  seconds, big pages and servers with very large certificate chains can fail on the little RAM.
+  A failed TLS open shows up like any other refused connection.
+
 ## WiFi state and signal strength
 The ESP firmware has no signal strength command. What it offers is the state of the WiFi connection and the
 name of the access point (command g). The name is shown in the driver tab and refreshed with the link check.
@@ -81,5 +100,5 @@ the six level signal graphics from the M4 Board build that could show it.
 * MSC_SYS_EXTFNC and FNC_DXT_LNGLOD are unknown, never call LNGLOD with guessed values.
 
 ## Not done
-Signal strength, TLS, language packs, server mode and the reset of all connections are not tested or not done. The probe waits up to 1 second per
+Signal strength, language packs, server mode and the reset of all connections are not tested or not done. The probe waits up to 1 second per
 strategy, a wrong saved slot makes the start slow until the scan has found the right one once.
