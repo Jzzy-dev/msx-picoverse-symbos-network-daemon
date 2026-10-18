@@ -7,6 +7,9 @@ A network daemon for MSX machines booting Symbos using the PicoVerse2350
 
 <a href="https://msx.pics/image/x4VGP"><img src="https://msx.pics/images/2026/10/14/net-test1.md.jpeg" alt="net test1" border="0"></a>
 
+<img width="500" height="375" alt="image" src="https://github.com/user-attachments/assets/b94422b1-2d25-43a6-b713-1f5d77370af1" />
+
+
 # SymbOS Network Daemon driver for ESP8266 UNAPI firmware on PicoVerse 2350
 
 Status, working on MSX2 with PicoVerse 2350 (SymbOS 4.0). The daemon finds the card, gets
