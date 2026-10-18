@@ -695,7 +695,7 @@ if ESPDEBUG=1
 endif
         scf
         ret
-espfin6 ld hl,esptxt2         ;found, the adapter line reads Adapter ESP8266 WiFi
+espfin6 ld hl,esptxt2         ;found, the adapter line reads Adapter: ESP8266 WiFi
         call esptext
 if ESPDEBUG=1
         call esplogtx
@@ -847,9 +847,14 @@ lowtop  ld c,a
         ld de,esp_tmp
         ld bc,8
         ldir
+        pop de                  ;e=mode, still needed below
+        push de
+        call esptlsd            ;TLS port? then flags and host name are prepared
         call espenter
         jp c,lowtop9
-        ld hl,11
+        ld hl,(esp_tlsl)        ;0 = plain TCP, else the host name block follows the flags
+        ld de,11
+        add hl,de
         ld a,esp_fn_tcpopen
         call espcmd
         ld a,(esp_tmp+2):call espsnd    ;remote IP
@@ -863,10 +868,22 @@ lowtop  ld c,a
         xor a:call espsnd       ;timeout suggestion 0 = default
         xor a:call espsnd
         pop de
-        ld a,e                  ;flags, bit0 = passive (server)
+        ld a,e                  ;flags, bit0 = passive (server), bit2 = TLS, bit3 = check the certificate
         and 1
+        ld hl,esp_tlsf
+        or (hl)
         call espsnd
-        call espleave
+        ld hl,(esp_tlsp)        ;host name for TLS (SNI), 0 terminated, nothing for plain TCP
+        ld bc,(esp_tlsl)
+lowtop6 ld a,b
+        or c
+        jr z,lowtop7
+        ld a,(hl)
+        ld (esp_mem_tx),a
+        inc hl
+        dec bc
+        jr lowtop6
+lowtop7 call espleave
         pop bc
         ld a,c
         ld (esp_pendsck),a
@@ -885,6 +902,114 @@ lowtop9 pop de
         pop bc
         ld a,neterrnhw
         scf
+        ret
+
+;### ESPTLSD -> decide if this open is TLS and prepare flags and host name
+;### Input      E=mode (bit 0 = server), esp_tmp = parameter block
+;### Output     esp_tlsf = flag bits for the ESP, esp_tlsl = number of host name bytes (0 = plain TCP),
+;###            esp_tlsp = the host name
+;### The ESP firmware (BearSSL) does the TLS work, only one TLS connection at a time. A connection to
+;### one of the ports in esp_tlsports is made a TLS connection, the program talks plain data.
+;### The host name is looked up by IP in the last DNS answers, it is needed for SNI and the name check.
+esp_tlsf        db 0
+esp_tlsl        dw 0
+esp_tlsp        dw 0
+esp_nohost      db 0
+esp_tlsports    dw 443,8443,465,993,995,0
+esp_hni         db 0
+esp_hn          ds 4*68         ;last 4 DNS answers - IP (4) and name (64)
+
+esptlsd xor a
+        ld (esp_tlsf),a
+        ld hl,0
+        ld (esp_tlsl),hl
+        bit 0,e
+        ret nz                  ;server connections stay plain
+        ld hl,esp_tlsports
+        ld a,(esp_tmp+6)
+        ld c,a
+        ld a,(esp_tmp+7)
+        ld b,a
+esptl0  ld e,(hl)
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld a,d
+        or e
+        ret z                   ;not a TLS port
+        ld a,e
+        cp c
+        jr nz,esptl0
+        ld a,d
+        cp b
+        jr nz,esptl0
+if TLSVERIFY=1
+        ld a,12                 ;TLS and check the certificate
+else
+        ld a,4                  ;TLS, the certificate is not checked
+endif
+        ld (esp_tlsf),a
+        ld hl,esp_nohost        ;without a known name only the terminator is sent
+        ld (esp_tlsp),hl
+        ld hl,1
+        ld (esp_tlsl),hl
+        ld ix,esp_hn
+        ld b,4
+esptl1  ld a,(ix+4)
+        or a
+        jr z,esptl4             ;entry not used
+        ld a,(esp_tmp+2)
+        cp (ix+0)
+        jr nz,esptl4
+        ld a,(esp_tmp+3)
+        cp (ix+1)
+        jr nz,esptl4
+        ld a,(esp_tmp+4)
+        cp (ix+2)
+        jr nz,esptl4
+        ld a,(esp_tmp+5)
+        cp (ix+3)
+        jr nz,esptl4
+        push ix                 ;found, count the name with its terminator
+        pop hl
+        ld de,4
+        add hl,de
+        ld (esp_tlsp),hl
+        ld bc,1
+esptl3  ld a,(hl)
+        or a
+        jr z,esptl5
+        inc hl
+        inc bc
+        jr esptl3
+esptl5  ld (esp_tlsl),bc
+        ret
+esptl4  ld de,68
+        add ix,de
+        djnz esptl1
+        ret
+
+;### ESPHNADD -> remember the name and the IP of the DNS answer that just arrived
+esphnadd ld ix,esp_hn
+        ld a,(esp_hni)
+        or a
+        jr z,esphna2
+        ld b,a
+        ld de,68
+esphna1 add ix,de
+        djnz esphna1
+esphna2 push ix
+        pop de
+        ld hl,esp_dnsres
+        ld bc,4
+        ldir
+        ld hl,esp_dnsb
+        ld bc,64
+        ldir
+        ld a,(esp_hni)
+        inc a
+        and 3
+        ld (esp_hni),a
         ret
 
 ;### ESPTOP -> poll the outstanding TCP open
@@ -1794,6 +1919,7 @@ espdnp  call espenter
         call espgtb:jr c,espdnp9:ld (esp_dnsres+2),a
         call espgtb:jr c,espdnp9:ld (esp_dnsres+3),a
         call espleave
+        call esphnadd
         ld a,2
         jr espdnp7
 espdnp5 call espskp
