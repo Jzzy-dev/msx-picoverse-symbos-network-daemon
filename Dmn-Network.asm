@@ -1386,6 +1386,10 @@ netips  ld hl,netipsc
         dec (hl)
         ret nz
         ld (hl),250             ;retry about every 5 seconds
+        call espap              ;the ESP blocks up to 10 seconds per IP command while it is not connected
+        ld a,(esp_apst)
+        cp 5
+        ret nz                  ;so the IP data is only asked when the access point state is connected
         call espips             ;fills net_ipaadr (ip,mask,gateway) and net_dnspri
         ret c
         ld hl,net_ipaadr        ;0.0.0.0 -> WiFi not connected yet
@@ -3959,9 +3963,9 @@ dw stacfg,  255*256+16, statxtbtb,    65,   107,    87,    12, 0    ;3 button se
 dw      0,  255*256+ 3, scnctlfr,      0,    16,   155,    90, 0    ;4 frame
 dw      0,  255*256+ 1, stactltxr,    10,    26,   140,     8, 0    ;5 WiFi access point
 dw      0,  255*256+42, scnctlcb,     10,    37,   135,    10, 0    ;6 list of networks
-dw scnscan, 255*256+16, scnctlbs,     10,    52,    36,    12, 0    ;7 button scan
-dw scnconn, 255*256+16, scnctlbc,     49,    52,    44,    12, 0    ;8 button connect
-dw scndisc, 255*256+16, scnctlbd,     96,    52,    49,    12, 0    ;9 button disconnect
+dw scnscan, 255*256+16, scntxbs,     10,    52,    36,    12, 0    ;7 button scan
+dw scnconn, 255*256+16, scntxbc,     49,    52,    44,    12, 0    ;8 button connect
+dw scndisc, 255*256+16, scntxbd,     96,    52,    49,    12, 0    ;9 button disconnect
 dw      0,  255*256+ 1, scnctlpt,     10,    69,    38,     8, 0    ;10 description password
 dw      0,  255*256+32, scnctlpw,     50,    67,    95,    12, 0    ;11 password input
 dw scnpws,  255*256+17, scnctlsh,     50,    81,    95,     8, 0    ;12 show password
@@ -4184,9 +4188,6 @@ stactlshc   dw stactlshs,statxttxy,256*0+2+4
 endif
 if DRIVER=6
 scnctlfr    dw scntxfr,2+4
-scnctlbs    dw scntxbs,2+4
-scnctlbc    dw scntxbc,2+4
-scnctlbd    dw scntxbd,2+4
 scnctlpt    dw scntxpt,2+4
 scnctlms    dw scnbufms,2+4
 scnctlpw    dw scnbufpw,0,0,0,0,64
