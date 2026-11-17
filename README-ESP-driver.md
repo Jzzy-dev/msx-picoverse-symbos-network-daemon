@@ -113,18 +113,21 @@ The status window has a fourth tab, Scan, modelled on the Scan tab that ducasp a
 * The scan code was run in an emulator against a scripted ESP (busy, ready, none, no answer, full table).
   The window layout itself has not been tried on a real SymbOS yet.
 
-## ESP8266 tab of the settings (version 0.7)
+## ESP8266 tab of the settings (version 0.7, file selector and progress window in 0.8)
 Network settings has a third tab, ESP8266.
 * ESP firmware version - read with the V command at the start and after an update.
 * Check HTTPS server certificates - see the TLS notes.
-* Update from a file - type the path of the file in SymbOS notation, for example A:\ESPFW\FW8266.BIN,
-  then press Firmware (fw8266.bin) or Certificates (cert8266.bin). Both files are in the ESPFW folder of
-  ducasp's packs. The daemon reads the file twice (first for the size), starts the update with Z or Y,
-  sends it in blocks of 256 bytes (z, every block is acknowledged), ends it with E and waits until the ESP
-  answers again. After a certificate update it asks the ESP to build the certificate index (I).
-  Updating the firmware erases the certificates, so update them again afterwards.
-* The daemon window does not react while it works, a firmware update takes a few minutes. Do not switch
-  off. The ESP cannot abort an update, if a block fails the message says to switch the MSX off and on.
+* Update from a file - press Firmware... (fw8266.bin) or Certificates... (cert8266.bin, mask AR in the
+  selector). The SymbOS file selector opens, pick the file and the update starts at once. The chosen path is
+  shown in the file line. Both files are in the ESPFW folder of ducasp's packs. The daemon reads the file
+  twice (first for the size), starts the update with Z or Y, sends it in blocks of 256 bytes (z, every
+  block is acknowledged), ends it with E and waits until the ESP answers again. After a certificate update
+  it asks the ESP to build the certificate index (I). Updating the firmware erases the certificates, so
+  update them again afterwards.
+* A progress window shows what happens (starting, sent n of m KB, writing, certificate index) with a
+  progress bar. It closes when the update is ready, the result stays in the message line of the tab.
+* A firmware update takes a few minutes. Do not switch off. The ESP cannot abort an update, if a block
+  fails the message says to switch the MSX off and on.
 * The protocol follows CFGESP of ducasp and the ESP firmware source. The update code was tested in an
   emulator against a scripted ESP (start, blocks, refusal, no answer, restart, certificate index), not
   yet with a real ESP, and the tab itself has not been tried on a real SymbOS.

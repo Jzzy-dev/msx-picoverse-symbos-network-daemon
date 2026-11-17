@@ -194,6 +194,33 @@ SySystem_PRGSRV
     call SySystem_WaitMessage
     ld hl,(App_MsgBuf+8)
     ret
+;--- SySystem_SELOPN
+SySystem_SELOPN
+;******************************************************************************
+;*** Name           Dialogue_FileSelector_Command
+;*** Input          HL = file mask/path/name buffer (#C000-#FFFF, 260 bytes)
+;***                A  = [bit0-3] buffer ram bank, [bit6] save, [bit7] directory
+;***                C  = attribute filter
+;***                IX = max directory entries, IY = max data buffer
+;***                DE = caller window data record
+;*** Output         A  = 0 selected, 1 aborted, 2 in use, 3 memory full,
+;***                     4 no window
+;***                - if A=0 the full path is in the buffer at offset 4
+;*** Destroyed      F,BC,DE,HL,IX,IY
+;******************************************************************************
+    ld (SySSOp1+2),de
+    call SySSMg1
+    call SySSMg2
+    ld c,MSC_SYS_SELOPN
+    call SySystem_WaitMessage
+SySSOp1 ld ix,0
+    ld (ix+51),0
+    ld hl,(App_MsgBuf+2)
+    cp -1
+    ret nz
+    ld (ix+51),l
+    call SySWMs0
+    jr SySSOp1
 ;--- SySystem_SYSWRN
 SySystem_SYSWRN
 ;******************************************************************************

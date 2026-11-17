@@ -968,13 +968,127 @@ cfgmsg1 ld a,(hl)
         inc de
         or a
         jr nz,cfgmsg1
-cfgmsg2 ld e,12
+cfgmsg2 ld a,(updwinid)
+        or a
+        jr nz,updtxt            ;the progress window is open, the text goes there
+        ld e,12
         ld a,(cfgwinid)
         jp SyDesktop_WINDIN
 
-;### CFGMSGX -> shows a text and continues with the main loop
-cfgmsgx call cfgmsg
+;### CFGMSGX -> closes the progress window, shows a text and continues with the main loop
+cfgmsgx push hl
+        call cfgpwcls
+        pop hl
+        call cfgmsg
         jp prgprz0
+
+;### CFGPWCLS -> closes the progress window if it is open
+cfgpwcls ld a,(updwinid)
+        or a
+        ret z
+        push af
+        xor a
+        ld (updwinid),a
+        pop af
+        jp SyDesktop_WINCLS
+
+;### CFGDRAIN -> throws away the messages the desktop sent while the update runs
+cfgdrain ld a,(App_PrcID)
+        db #dd:ld l,a
+        db #dd:ld h,PRC_ID_DESKTOP
+        ld iy,App_MsgBuf
+        rst #18
+        db #dd:dec l
+        jr z,cfgdrain
+        ret
+
+;### UPDTXT -> copies the message line into the progress window and redraws the text and the bar
+updtxt  ld hl,cfgbufms
+        ld de,updline2
+        ld b,30
+updtx1  ld a,(hl)
+        or a
+        jr z,updtx2
+        ld (de),a
+        inc hl
+        inc de
+        djnz updtx1
+        jr updtx4
+updtx2  ld a," "                ;fill the rest with spaces so that the old text is gone
+updtx3  ld (de),a
+        inc de
+        djnz updtx3
+updtx4  xor a
+        ld (de),a
+        call cfgdrain
+        ld a,(updwinid)
+        ld d,2
+        ld e,254                ;redraw the text and the bar
+        call SyDesktop_WINDIN
+        rst #30
+        call cfgdrain
+        ret
+
+;### CFGPWOP -> opens the progress window, A=title text address low part comes from (cfgfwfn)
+cfgpwop xor a
+        ld (cfgbarp+1),a
+        ld hl,updtit1
+        ld a,(cfgfwfn)
+        cp "Y"
+        jr nz,cfgpwo1
+        ld hl,updtit2
+cfgpwo1 ld (updwindat+30),hl
+        ld hl,updline2
+        ld b,30
+        ld a," "
+cfgpwo2 ld (hl),a
+        inc hl
+        djnz cfgpwo2
+        ld (hl),0
+        ld a,(App_BnkNum)
+        ld de,updwindat
+        call SyDesktop_WINOPN
+        jr c,cfgpwo3
+        ld (updwinid),a
+        ld a,(updwinid)
+        call SyDesktop_WINTOP
+cfgpwo3 ret
+
+;### CFGBAR -> sets the progress bar, HL=blocks sent, DE=blocks in total
+cfgbar  ld a,d
+        or a
+        jr z,cfgbar1
+        srl d
+        rr e
+        srl h
+        rr l
+        jr cfgbar
+cfgbar1 ld a,e
+        or a
+        jr nz,cfgbar2
+        inc e
+cfgbar2 ld a,h
+        or a
+        jr z,cfgbar3
+        ld l,255                ;more than the total, show a full bar
+cfgbar3 ld a,l
+        ld h,a
+        ld l,0
+        ld c,a
+        ld b,0
+        or a
+        sbc hl,bc               ;HL = sent * 255
+        ld d,0
+        ld b,0
+cfgbar4 or a
+        sbc hl,de
+        jr c,cfgbar5
+        inc b
+        jr nz,cfgbar4
+        dec b
+cfgbar5 ld a,b
+        ld (cfgbarp+1),a
+        ret
 
 ;### CFGDEC -> adds the number in HL as decimal text at (cfgdecp), the pointer moves behind the text
 cfgdec  ld de,cfgdect
@@ -1029,7 +1143,7 @@ cfgadd2 ld (cfgdecp),de
 
 ;### CFGFWOP -> opens the update file
 ;### Output     CF=1 error
-cfgfwop ld hl,cfgbufpa
+cfgfwop ld hl,cfgselp
         ld a,(App_BnkNum)
         db #dd:ld h,a
         call SyFile_FILOPN
@@ -1049,15 +1163,62 @@ cfgfwrd ld hl,cfgfwbuf
         or a
         ret
 
+;### CFGSEL -> file selector for the update file
+;### Output     CF=1 nothing selected, CF=0 the path is in cfgselp and shown in the file line
+cfgsel  ld hl,cfgselmz
+        ld a,(cfgfwfn)
+        cp "Y"
+        jr nz,cfgsel1
+        ld hl,cfgselmy
+cfgsel1 ld de,cfgselm
+        ld bc,4
+        ldir
+        xor a
+        ld (cfgselp),a
+        ld hl,cfgselm
+        ld a,(App_BnkNum)
+        ld c,8
+        ld ix,100
+        ld iy,5000
+        ld de,cfgwindat
+        call SySystem_SELOPN
+        cp 1
+        jr z,cfgsel9            ;cancelled
+        or a
+        jr z,cfgsel2
+        ld hl,cfgfwmf
+        call cfgmsg
+        jr cfgsel9
+cfgsel2 ld a,(cfgselp)
+        or a
+        jr z,cfgsel9
+        ld hl,cfgselp           ;show the name in the file line, the last 63 characters fit
+        ld de,cfgbufpa
+        ld b,63
+cfgsel3 ld a,(hl)
+        ld (de),a
+        or a
+        jr z,cfgsel4
+        inc hl
+        inc de
+        djnz cfgsel3
+        xor a
+        ld (de),a
+cfgsel4 ld e,9
+        ld a,(cfgwinid)
+        call SyDesktop_WINDIN
+        or a
+        ret
+cfgsel9 scf
+        ret
+
 ;### CFGFWF / CFGFWC -> buttons Firmware and Certificates
 cfgfwf  ld a,"Z"
         jr cfgfwu
 cfgfwc  ld a,"Y"
 cfgfwu  ld (cfgfwfn),a
-        ld a,(cfgbufpa)
-        or a
-        ld hl,cfgfwm0
-        jp z,cfgmsgx
+        call cfgsel             ;the file selector
+        jp c,prgprz0
         call cfgfwop            ;*** first read of the file to get its size
         ld hl,cfgfwm1
         jp c,cfgmsgx
@@ -1126,6 +1287,7 @@ cfgfwu3 ld a,(cfgfwh)
         ld de,esp_fwbuf
         ld bc,4
         ldir
+        call cfgpwop
         ld hl,cfgfwm4
         call cfgmsg
         ld a,(cfgfwfn)
@@ -1151,8 +1313,8 @@ cfgfwl1 ld hl,cfgfwbuf          ;*** send the blocks
         inc hl
         ld (cfgfwbc),hl
         ld a,l
-        and 31
-        call z,cfgfwpr          ;show the progress every 32 blocks
+        and 7
+        call z,cfgfwpr          ;show the progress every 8 blocks
         call cfgfwrd
         jp c,cfgfwe5
         ld a,(cfgfwbn)
@@ -1179,7 +1341,8 @@ cfgfwu5 ld a,(cfgfwfn)
         call espcrt
         or a
         jp nz,cfgfwe4           ;no certificate index
-cfgfwu6 xor a
+cfgfwu6 call cfgpwcls
+        xor a
         call lowini             ;find the ESP again, reads the version and the access point
         ld a,1
         call netini0
@@ -1216,7 +1379,11 @@ cfgfwe4 ld hl,cfgfwma
 cfgfwe6 jp cfgmsgx
 
 ;### CFGFWPR -> shows "Sent n of m KB"
-cfgfwpr ld hl,cfgbufms
+cfgfwpr ld hl,(cfgfwbc)
+        ld de,(cfgfwsz+1)
+        inc de
+        call cfgbar             ;the bar
+        ld hl,cfgbufms
         ld (cfgdecp),hl
         ld hl,cfgfwm7
         call cfgadd
@@ -4143,10 +4310,14 @@ cfgtxtvr    db "ESP firmware version",0
 cfgtxttls   db "Check HTTPS server certificates",0
 cfgtxtfrf   db "Update from a file",0
 cfgtxtfl    db "File",0
-cfgtxtbf    db "Firmware",0
-cfgtxtbc    db "Certificates",0
-cfgtxthn    db "Example A:\ESPFW\FW8266.BIN",0
-cfgfwm0     db "Type the file name first",0
+cfgtxtbf    db "Firmware...",0
+cfgtxtbc    db "Certificates...",0
+cfgtxthn    db "The buttons ask for the file",0
+cfgfwmf     db "Cannot open the file selector",0
+cfgselmz    db "BIN",0
+cfgselmy    db "AR",0,0
+updtit1     db "Updating the ESP firmware",0
+updtit2     db "Updating the ESP certificates",0
 cfgfwm1     db "Cannot open the file",0
 cfgfwm2     db "Cannot read the file",0
 cfgfwm3     db "The file is empty",0
@@ -4207,6 +4378,9 @@ cfgtxtver   db "?",0
             ds 6
 cfgdect     ds 5
 cfgfwbuf    ds 256      ;block read from the file
+updwinid    db 0        ;progress window, 0 = not open
+updline1    db "Do not switch off the MSX",0
+updline2    ds 31
 endif
 
 ;==============================================================================
@@ -4756,4 +4930,19 @@ cfgctlpa    dw cfgbufpa,0,0,0,0,63
             db 0
 cfgctlms    dw cfgbufms,2+4
 cfgctlhn    dw cfgtxthn,2+4
+
+cfgselm     db "BIN",0          ;mask and result of the file selector, the path starts at offset 4
+cfgselp     ds 256
+
+updwindat   dw #1101,0,70,70,175,50,0,0,175,50,175,50,175,50,prgicnsml,updtit1,0,0
+updwindat0  dw updgrp,0,0:ds 136+14
+updgrp      db 4,0:dw updctrl,0,0,0,0,0,0
+updctrl
+dw      0,  255*256+ 0,         2,     0,     0, 10000, 10000, 0    ;0 background
+dw      0,  255*256+ 1, updctl1,      8,     6,   160,     8, 0    ;1 text, do not switch off
+dw      0,  255*256+ 1, updctl2,      8,    18,   160,     8, 0    ;2 text, what happens now
+dw      0,  255*256+ 4, cfgbarp,      8,    32,   160,    10, 0    ;3 progress bar
+updctl1     dw updline1,2+4
+updctl2     dw updline2,2+4
+cfgbarp     dw #36
 endif
