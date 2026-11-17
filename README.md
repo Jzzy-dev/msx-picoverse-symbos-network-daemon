@@ -14,7 +14,7 @@ A network daemon for MSX machines booting Symbos using the PicoVerse2350
 
 Status, working on MSX2 with PicoVerse 2350 (SymbOS 4.0). The daemon finds the card, gets
 the IP settings through DHCP from the ESP, resolves names and moves TCP data. wget and SymTel
-were used successfully. UDP works too (tested with SNTP). Driver version 0.7, shown in the Driver tab as MSX PcVrs ESP v0.7. HTTPS (TLS) is supported through the ESP, see below and the notes there (untested at the time of writing).
+were used successfully. UDP works too (tested with SNTP). Driver version 0.8, shown in the Driver tab as MSX PcVrs ESP v0.8. HTTPS (TLS) is supported through the ESP, see below and the notes there (untested at the time of writing).
 
 ## Build
 Wrapper order, constants file, Dmn-Network-head.asm, Dmn-Network-libs.asm, Dmn-Network.asm
@@ -65,28 +65,50 @@ Tested on real hardware with Net Test (World clock, SNTP).
   closes all transient UDP sockets in the ESP, so a program that was killed cannot block the four ESP
   connections. The ESP has four connections for TCP and UDP together.
 * The answer to UDP_SEND is waited for up to 3 seconds, the ESP can need a while.
-* Largest datagram is 576 bytes, larger ones are refused on send and cut on receive.
+* Largest datagram is 576 bytes by default (UDPMAX), larger ones are refused on send and dropped on receive.
 
-## HTTPS / TLS
-The ESP firmware (BearSSL) can do TLS itself, TCP_OPEN has a flag for it. The SymbOS network API has no
-TLS flag, so the driver decides by port, the program just talks plain data to the daemon.
-* A client connection to port 443, 8443, 465, 993 or 995 is opened as a TLS connection. The list is
-  esp_tlsports in Dmn-Network-ESP.asm. Server connections stay plain.
-* So `http://host:443/` style access works in any program that lets you pick the port, and a program
-  that has its own https support only has to connect to port 443 and send its plain HTTP request.
-* For SNI and the name check the ESP needs the host name, the daemon only has the IP at that point.
-  The driver remembers the last four DNS answers (name and IP) and sends the name that belongs to
-  the IP. A connection by IP number without a previous name lookup has no host name, a lot of servers
-  refuse that.
-* Certificate check - the check box "Check HTTPS server certificates" in the ESP8266 tab of the settings
-  (Network settings button) switches it on and off, it is saved in network.ini. Off (default) = encrypted,
-  but the server certificate is not checked, so nobody listening along can read the data, but a man in the
-  middle is not noticed. On = the ESP checks the certificate against its certificate store (certs.ar in the
-  ESP, put there by the certificate update below), a connection then fails if the store is missing, the
-  certificate is not known or the date of the ESP is wrong. TLSVERIFY in the wrapper is only the start value.
+## HTTPS / TLS (changed in version 0.8)
+The ESP firmware (BearSSL) does the TLS itself. Since version 0.8 the program asks for TLS explicitly in
+TCP_Open, the same way as ducasp's OCM daemon does. There is no guessing by port number and no cache of DNS
+names any more. This is not compatible with programs that rely on the old port list, they connect in plain
+text now.
+* A = mode byte. Bit 0 server, bit 1 reserved (must be 0), bit 2 TLS, bit 3 check the certificate and the
+  host name, bits 4 to 7 the bank of the host name.
+* BC = address of the zero terminated host name (SNI and name check), 0 for a plain connection.
+  Plain client A=0, TLS client A=4, TLS with certificate check A=12. A TLS server is not possible, error 3.
+* A missing, empty, unterminated or longer than 255 bytes host name gives error 26.
+* A failed TLS open ends as a closed socket with the close reason 25 (TLS handshake or certificate) and
+  8 for no free session. The reason is returned in H of TCP_Status and in H of the TCP event.
+* The check box "Check HTTPS server certificates" in the ESP8266 tab of the settings (Network settings
+  button) adds the certificate check (bit 3) to every TLS connection, whatever the program asks for. It is
+  saved in network.ini. TLSVERIFY in the wrapper is only the start value. The ESP checks against its
+  certificate store (certs.ar, put there by the certificate update), a connection fails if the store is
+  missing, the certificate is not known or the date of the ESP is wrong.
 * Limits of the ESP: only one TLS connection at a time, TLS 1.2 at most, the handshake takes a few
   seconds, big pages and servers with very large certificate chains can fail on the little RAM.
-  A failed TLS open shows up like any other refused connection.
+
+## Protocol fixes taken from the OCM daemon (version 0.8)
+ducasp found a number of problems in the daemon while working on the OCM WiFi driver, see issue 1 and the
+porting guide. Ported to this driver, the hardware transport and the slot window are untouched.
+* The ESP handles one command at a time. While a TCP open or a DNS request is outstanding the driver
+  refuses every other command at the driver entry points (TCP status, send, receive, close, UDP open, send,
+  close, status), before the slot window is opened. Receive and send return nothing transferred, close returns
+  error 5 and the socket stays, status reports "in process". TCP_Open and UDP_Open are refused before a
+  socket is taken, so none is lost.
+* Close and disconnect ask the driver first and free the socket only when it worked, so a busy close can be
+  repeated. A refused TCP open gives its socket back.
+* A connection that the server closed but that still has data in the ESP keeps showing as established
+  with data until the program has read it, so downloads are not cut short (CLOSE_WAIT and LAST_ACK).
+* The events use the socket that is really being checked, and "Reset all connections" in the menu now closes
+  every socket (it used socket 0 only).
+* UDP_Receive BC contract. BC=0 copies the whole datagram, BC larger than the datagram copies all of it, BC
+  from 1 up to the length copies BC bytes and drops the rest. The datagram is consumed in all cases and BC
+  returns the number of bytes copied. UDP_Status still shows the full length.
+* The largest UDP datagram is UDPMAX in the wrapper, 576 by default. 1468 can be chosen, it costs about
+  1.8 KB more transfer area because the send and the receive buffer are separate in this driver.
+* Not ported. UDP_STATEX (needs a firmware that has function 210, the direct UDP_RCV model is kept, so the
+  socket index problem of that model does not exist here), the ESP hosted IP configuration and the OCM
+  user interface parts.
 
 ## Scan tab (version 0.6)
 The status window has a fourth tab, Scan, modelled on the Scan tab that ducasp added to his SM-X daemon.

@@ -129,6 +129,8 @@ neterrdtr   equ 19  ;dns - truncated answer
 neterrdln   equ 20  ;dns - package too large
 
 neterrtes   equ 24  ;tcp - connection not yet established
+neterrtls   equ 25  ;tcp - TLS handshake or certificate failed
+neterrhst   equ 26  ;tcp - TLS host name missing or invalid
 
 
 ;==============================================================================
@@ -1958,7 +1960,13 @@ netpol3 dec a                       ;*** STATUS CHECK
 ;### NETTCP -> manages TCP socket
 ;### Input      C=socket ID, IX=socket data
 nettcps db 0,0          ;old status
+if DRIVER=6
+nettcpsck db 0                  ;socket of the event that is built
 nettcp  ld a,c
+        ld (nettcpsck),a
+else
+nettcp  ld a,c
+endif
         call lowtst             ;A=status, BC=received bytes, IX,IY=remote IP, DE=remote port
         or a
         jr z,netpol0                ;in process -> skip
@@ -1975,6 +1983,12 @@ nettcp1 ld (nettcps),hl
         ld (ix+sckdatsta+0),a       ;store new status
         ld (ix+sckdatrcv+0),c       ;store received bytes
         ld (ix+sckdatrcv+1),b
+if DRIVER=6
+        push af
+        ld a,(esp_lastreason)
+        ld (ix+sckdatrsv),a         ;store the close reason
+        pop af
+endif
         ld (ix+sckdatrpo+0),e       ;store remote port
         ld (ix+sckdatrpo+1),d
         ld (ix+sckdatrip+0),l       ;store remote IP
@@ -2006,16 +2020,27 @@ nettcp2 res 7,l                 ;send "connection status" event
         call nettcp3
         jr netpol0
 ;l=status
+if DRIVER=6
+nettcp3 ld a,(esp_lastreason)
+        ld h,a                  ;the close reason travels in the H byte of the event
+        ld a,(nettcpsck)
+        or a
+        call netmsg1:db MSR_NET_TCPEVT
+        ret
+else
 nettcp3 ld a,(netpols+1)
         or a
         call netmsg1:db MSR_NET_TCPEVT
         ret
+endif
 
 ;### NETUDP -> manages UDP socket
 ;### Input      C=socket ID, IX=socket data
 if DRIVER=6
 netudps db 0,0          ;old status
+netudpsck db 0
 netudp  ld a,c
+        ld (netudpsck),a
         call lowust             ;A=status, BC=received bytes, IX,IY=remote IP, DE=remote port
         or a
         jp z,netpol0                ;in process -> skip
@@ -2063,7 +2088,7 @@ netudp2 res 7,l                 ;send "connection status" event
         call netudp3
         jp netpol0
 ;l=status
-netudp3 ld a,(netpols+1)
+netudp3 ld a,(netudpsck)
         or a
         call netmsg1:db MSR_NET_UDPEVT
         ret
@@ -2302,18 +2327,119 @@ sckdec  push hl
 ;### Output     CF=0 ok,    (netscknum)=socket
 ;###            CF=1 error, A=error code
 ;### Destroyed  BC,DE,HL,IX,IY
-tcpopns ds 8
-tcpopn
 if DRIVER=6
-        ld c,a
+;  Input  A bit 0=server, bit 1=reserved (must be 0), bit 2=TLS, bit 3=verify certificate and host name,
+;         bits 4-7=bank of the host name, BC=zero terminated host name for TLS (SNI), 0 for plain TCP
+tcpopns ds 10                   ;local port, remote IP, remote port, flags, host length
+tcpopnf db 0                    ;the mode bits as given
+tcphbnk db 0                    ;bank of the host name
+tcpopn  ld (tcpopnf),a
         ld a,(esp_pend)         ;a long request is outstanding, refuse before a socket is taken
         or a
         ld a,neterrcon
         scf
         ret nz
+        call netprt
+        ld (tcpopns+0),hl
+        ld (tcpopns+2),ix
+        ld (tcpopns+4),iy
+        ld (tcpopns+6),de
+        ld a,(tcpopnf)
+        and #0f
+        ld (tcpopns+8),a        ;mode flags for the ESP
+        xor a
+        ld (tcpopns+9),a        ;no host name
+        ld a,(tcpopnf)
+        rrca
+        rrca
+        rrca
+        rrca
+        and #0f
+        ld (tcphbnk),a
+        ld a,(tcpopns+8)
+        bit 1,a
+        jr nz,tcpopn8           ;reserved bit set
+        bit 0,a
+        jr z,tcpopnc
+        bit 2,a
+        jr nz,tcpopn8           ;TLS server is not possible
+        jr tcpopn9
+tcpopnc bit 2,a
+        jr z,tcpopn9            ;plain TCP client, no host name
+        ld a,b
+        or c
+        jr z,tcpopn7            ;TLS without a host name
+        ld a,(App_BnkNum)
+        add a:add a:add a:add a
+        ld hl,tcphbnk
+        add (hl)                ;A=(dest<<4)+src, dest=own bank, src=caller bank
+        ld h,b
+        ld l,c
+        ld de,tcphost
+        ld bc,256
+        rst #20:dw jmp_bnkcop
+        ld hl,tcphost
+        ld a,(hl)
+        or a
+        jr z,tcpopn7            ;empty name
+        ld b,255
+tcpopnh1 ld a,(hl)
+        or a
+        jr z,tcpopnh2
+        inc hl
+        djnz tcpopnh1
+        jr tcpopn7              ;no terminator within 255 bytes
+tcpopnh2 ld de,tcphost
+        or a
+        sbc hl,de
+        inc hl                  ;length including the terminator
+        ld a,l
+        ld (tcpopns+9),a
+        jr tcpopn9
+tcpopn7 ld a,neterrhst
+        scf
+        ret
+tcpopn8 ld a,neterrfnc
+        scf
+        ret
+tcpopn9 ld a,scktyptcp
+        call scknew
+        ret c
+        ld (netscknum),a
+        ld (iy+sckdatrsv),0     ;no close reason yet
+        ld c,a                  ;c=socket
+        ld hl,(tcpopns+0)
+        ld (iy+sckdatlpo+0),l
+        ld (iy+sckdatlpo+1),h
+        ld a,(tcpopns+8)
+        bit 0,a
+        jr nz,tcpopn2
+        ld hl,(tcpopns+2)       ;** client
+        ld (iy+sckdatrip+0),l
+        ld (iy+sckdatrip+1),h
+        ld hl,(tcpopns+4)
+        ld (iy+sckdatrip+2),l
+        ld (iy+sckdatrip+3),h
+        ld hl,(tcpopns+6)
+        ld (iy+sckdatrpo+0),l
+        ld (iy+sckdatrpo+1),h
+        ld de,256*sckstatop+0
+tcpopn1 ld (iy+sckdatsta),d
+        ld ix,tcpopns
         ld a,c
-endif
-        push af
+        push iy
+        call lowtop             ;a=socket, e=0 client or 1 server, ix=parameter block
+        pop iy
+        ret nc
+        ld (iy+sckdattyp),scktypfre     ;the ESP refused it, give the socket back
+        call sckdec
+        scf
+        ret
+tcpopn2 ld de,256*sckstatli+1           ;** server
+        jr tcpopn1
+else
+tcpopns ds 8
+tcpopn  push af
         call netprt
         pop af
         ld (tcpopns+0),hl
@@ -2341,21 +2467,6 @@ endif
         ld de,256*sckstatop+0
 tcpopn1 ld (iy+sckdatsta),d
         ld ix,tcpopns
-if DRIVER=6
-        push iy
-        push af                 ;a=socket
-        call lowtop
-        pop bc                  ;b=socket
-        pop iy
-        jr c,tcpopn3
-        ld a,b
-        ld (netscknum),a
-        ret
-tcpopn3 ld (iy+sckdattyp),scktypfre     ;the ESP refused it, give the socket back
-        call sckdec
-        scf
-        ret
-else
         push af
         call lowtop
         pop bc
@@ -2363,9 +2474,9 @@ else
         ld a,b
         ld (netscknum),a
         ret
-endif
 tcpopn2 ld de,256*sckstatli+1           ;** server
         jr tcpopn1
+endif
 
 ;### TCPCLO -> TCP close connection
 ;### Input      A=socket
@@ -2517,6 +2628,9 @@ tcpsta  ld c,scktyptcp
         ld h,(iy+sckdatrip+3)
         push hl
         ld l,(iy+sckdatsta)
+if DRIVER=6
+        ld h,(iy+sckdatrsv)     ;the close reason
+endif
         pop iy
         pop ix
         or a
@@ -2656,23 +2770,27 @@ endif
 ;### Destroyed  BC,DE,HL,IX,IY
 udprcv
 if DRIVER=6
+        push bc                 ;maximum length of the caller, 0 = the whole datagram
         push hl                 ;destination
         ld c,scktypudp
         call sckget             ;iy=record, a=socket
         pop hl
+        pop bc
         ret c
         bit 7,(iy+sckdatsta)    ;ZF=1 means nothing is waiting
         ld d,a                  ;d=socket
         ld a,neterrtes
         scf
         ret z
+        ld e,(iy+sckdatbnk)
+        push bc
         ld c,(iy+sckdatrcv+0)
         ld b,(iy+sckdatrcv+1)
-        ld e,(iy+sckdatbnk)
-        call netdin
+        call netdin             ;the statistics count the complete datagram
+        pop bc
         push iy
         ld a,d
-        call lowurx             ;a=socket, bc=length, e=bank, hl=destination
+        call lowurx             ;a=socket, bc=maximum, e=bank, hl=destination, returns bc=copied
         pop iy
         ld (iy+sckdatrcv+0),0
         ld (iy+sckdatrcv+1),0

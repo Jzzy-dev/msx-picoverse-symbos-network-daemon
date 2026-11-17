@@ -68,6 +68,9 @@ esp_pend        db 0            ;0=idle, else fn of an outstanding request
 esp_pendsck     db 0            ;socket that owns the outstanding request
 esp_conn        ds low_sockmax  ;ESP connection number per daemon socket (0=none)
 esp_stat        ds low_sockmax  ;cached daemon status (for pending open result)
+esp_reason      ds low_sockmax  ;why an open failed per socket, 8 no free session, 25 TLS
+esp_tlsreq      ds low_sockmax  ;4 when the open of that socket asked for TLS
+esp_lastreason  db 0            ;reason of the socket that lowtst checked last
 esp_dnsres      ds 4            ;last DNS result
 esp_dnsst       db 0            ;0=idle,1=pending,2=ok,3=failed
 esp_mac         ds 6            ;pseudo MAC (ESP owns the real one)
@@ -77,7 +80,7 @@ esp_sta_delay   equ 3
 
 ; Everything the code touches while the slot window is open must live in this
 ; file (transfer area, page 3). The daemon data may not be reachable then.
-esp_tmp         ds 8            ;copy of the TCP open parameter block
+esp_tmp         ds 10           ;copy of the TCP open parameter block, flags and host name length are at +8 and +9
 esp_ip4         ds 4            ;IP info answer
 esp_dnsb        ds 64           ;copy of the domain name for a DNS request
 esp_dnsl        dw 0            ;its length
@@ -846,7 +849,7 @@ lowtop  ld c,a
         push ix
         pop hl                  ;copy the parameter block into the transfer area
         ld de,esp_tmp
-        ld bc,8
+        ld bc,10
         ldir
         pop de                  ;e=mode, still needed below
         push de
@@ -897,6 +900,14 @@ lowtop7 call espleave
         ld hl,esp_stat
         add hl,bc
         ld (hl),0               ;0 = still opening
+        ld hl,esp_reason
+        add hl,bc
+        ld (hl),0
+        ld hl,esp_tlsreq
+        add hl,bc
+        ld a,(esp_tmp+8)
+        and 4
+        ld (hl),a
         or a
         ret
 lowtop9 pop de
@@ -905,112 +916,35 @@ lowtop9 pop de
         scf
         ret
 
-;### ESPTLSD -> decide if this open is TLS and prepare flags and host name
-;### Input      E=mode (bit 0 = server), esp_tmp = parameter block
+;### ESPTLSD -> take the explicit TLS flags and host name from the daemon
+;### Input      esp_tmp = parameter block, (esp_tmp+8)=flags, (esp_tmp+9)=length of the host name
 ;### Output     esp_tlsf = flag bits for the ESP, esp_tlsl = number of host name bytes (0 = plain TCP),
-;###            esp_tlsp = the host name
-;### The ESP firmware (BearSSL) does the TLS work, only one TLS connection at a time. A connection to
-;### one of the ports in esp_tlsports is made a TLS connection, the program talks plain data.
-;### The host name is looked up by IP in the last DNS answers, it is needed for SNI and the name check.
+;###            esp_tlsp = the host name in the transfer area
+;### The program asks for TLS in the mode of TCP_Open, bit 2 TLS and bit 3 check the certificate. The host name
+;### is needed for SNI and the name check. There is no guessing by port number and no DNS name cache.
+;### The setting in the ESP8266 tab of the settings adds the certificate check to every TLS connection.
 esp_tlsf        db 0
 esp_tlsl        dw 0
 esp_tlsp        dw 0
-esp_nohost      db 0
-esp_tlsports    dw 443,8443,465,993,995,0
-esp_hni         db 0
-esp_hn          ds 4*68         ;last 4 DNS answers - IP (4) and name (64)
+tcphost         equ esp_fwbuf   ;the firmware update is not running while a connection is opened
 
-esptlsd xor a
-        ld (esp_tlsf),a
-        ld hl,0
-        ld (esp_tlsl),hl
-        bit 0,e
-        ret nz                  ;server connections stay plain
-        ld hl,esp_tlsports
-        ld a,(esp_tmp+6)
-        ld c,a
-        ld a,(esp_tmp+7)
+esptlsd ld a,(esp_tmp+8)
+        and #0c
         ld b,a
-esptl0  ld e,(hl)
-        inc hl
-        ld d,(hl)
-        inc hl
-        ld a,d
-        or e
-        ret z                   ;not a TLS port
-        ld a,e
-        cp c
-        jr nz,esptl0
-        ld a,d
-        cp b
-        jr nz,esptl0
+        bit 2,b
+        jr z,esptl00
         ld a,(cfg_tlsver)       ;set in the ESP8266 tab of the settings
         or a
-        ld a,4                  ;TLS, the certificate is not checked
         jr z,esptl00
-        ld a,12                 ;TLS and check the certificate
-esptl00 ld (esp_tlsf),a
-        ld hl,esp_nohost        ;without a known name only the terminator is sent
+        set 3,b                 ;check the certificate
+esptl00 ld a,b
+        ld (esp_tlsf),a
+        ld a,(esp_tmp+9)
+        ld (esp_tlsl+0),a
+        xor a
+        ld (esp_tlsl+1),a
+        ld hl,tcphost
         ld (esp_tlsp),hl
-        ld hl,1
-        ld (esp_tlsl),hl
-        ld ix,esp_hn
-        ld b,4
-esptl1  ld a,(ix+4)
-        or a
-        jr z,esptl4             ;entry not used
-        ld a,(esp_tmp+2)
-        cp (ix+0)
-        jr nz,esptl4
-        ld a,(esp_tmp+3)
-        cp (ix+1)
-        jr nz,esptl4
-        ld a,(esp_tmp+4)
-        cp (ix+2)
-        jr nz,esptl4
-        ld a,(esp_tmp+5)
-        cp (ix+3)
-        jr nz,esptl4
-        push ix                 ;found, count the name with its terminator
-        pop hl
-        ld de,4
-        add hl,de
-        ld (esp_tlsp),hl
-        ld bc,1
-esptl3  ld a,(hl)
-        or a
-        jr z,esptl5
-        inc hl
-        inc bc
-        jr esptl3
-esptl5  ld (esp_tlsl),bc
-        ret
-esptl4  ld de,68
-        add ix,de
-        djnz esptl1
-        ret
-
-;### ESPHNADD -> remember the name and the IP of the DNS answer that just arrived
-esphnadd ld ix,esp_hn
-        ld a,(esp_hni)
-        or a
-        jr z,esphna2
-        ld b,a
-        ld de,68
-esphna1 add ix,de
-        djnz esphna1
-esphna2 push ix
-        pop de
-        ld hl,esp_dnsres
-        ld bc,4
-        ldir
-        ld hl,esp_dnsb
-        ld bc,64
-        ldir
-        ld a,(esp_hni)
-        inc a
-        and 3
-        ld (esp_hni),a
         ret
 
 ;### ESPTOP -> poll the outstanding TCP open
@@ -1030,8 +964,31 @@ esptop  call espenter
         ld (hl),d
         ld a,sckstates
         jr esptop7
-esptop5 call espskp             ;failed - drain payload, mark closed
+esptop5 ld (esp_toprc),a
+        call espskp             ;failed - drain payload, mark closed
         call espleave
+        ld a,(esp_pendsck)
+        ld c,a
+        ld b,0
+        ld hl,esp_tlsreq
+        add hl,bc
+        ld a,(hl)
+        or a
+        jr z,esptop3            ;plain TCP, only no free connection is reported
+        ld a,(esp_toprc)
+        cp 1
+        jr z,esptop4
+        ld a,neterrtls          ;TLS handshake, certificate or host name
+        jr esptop6
+esptop4 ld a,neterrsfr          ;the ESP has no free connection or TLS session
+        jr esptop6
+esptop3 ld a,(esp_toprc)
+        cp 1
+        jr z,esptop4
+        xor a
+esptop6 ld hl,esp_reason
+        add hl,bc
+        ld (hl),a
         ld a,sckstatcl
 esptop7 push af
         ld a,(esp_pendsck)
@@ -1046,6 +1003,7 @@ esptop7 push af
         ret
 esptop9 call espleave
         ret
+esp_toprc db 0
 
 ;### ESPSLT -> HL=address of esp_conn entry for socket A
 espslot ld c,a
@@ -1126,6 +1084,8 @@ espstq9 call espleave
 ;          4 established,9 close-wait (check TCP/IP UNAPI spec 4.5.x).
 lowtst  ld (lowtsts),a
         ld c,a
+        xor a
+        ld (esp_lastreason),a
         ld a,(esp_pend)
         cp esp_fn_tcpopen
         jr nz,lowtst1
@@ -1171,21 +1131,30 @@ lowtst2 ld a,(lowtsts)
         ld b,sckstates
         cp 4:jr z,lowtst3       ;4 established
         ld b,sckstatcw
-        cp 9:jr z,lowtst3       ;9 close wait
+        cp 7:jr z,lowtst4       ;7 close wait, the peer has sent its FIN
+        cp 9:jr z,lowtst4       ;9 last ack
         ld b,sckstatcl          ;anything else = closing/unknown
+        jr lowtst3
+lowtst4 ld a,(esp_st_avail+0)   ;data is still buffered, keep reporting established until it is read
+        ld hl,esp_st_avail+1
+        or (hl)
+        jr z,lowtst3            ;nothing buffered, report the closing state
+        ld b,sckstates
 lowtst3 ld a,b
         ld bc,(esp_st_avail)
         ld ix,(esp_st_ip+0)
         ld iy,(esp_st_ip+2)
         ld de,(esp_st_port)
         ld l,a
+        call lowtstr            ;esp_lastreason for the daemon
         ld a,b
         or c
         ld a,l
         ret z
         set 7,a                 ;data waiting
         ret
-lowtstc ld a,sckstatcl
+lowtstc call lowtstr
+        ld a,sckstatcl
         ld bc,0
         ld ix,0
         ld iy,0
@@ -1194,6 +1163,20 @@ lowtstc ld a,sckstatcl
 lowtstz xor a
         ret
 lowtsts db 0
+
+;### LOWTSTR -> esp_lastreason = close reason of the socket in lowtsts
+;### Destroyed  AF
+lowtstr push hl
+        ld hl,esp_reason
+        ld a,(lowtsts)
+        add a,l
+        ld l,a
+        jr nc,lowtstr1
+        inc h
+lowtstr1 ld a,(hl)
+        ld (esp_lastreason),a
+        pop hl
+        ret
 
 ;### LOWTTX -> TCP send
 ;### Input      A=socket, BC=length, E,HL=source (E=bank)
@@ -1558,9 +1541,9 @@ esp_fn_udpclose equ 9
 esp_fn_udpstate equ 10
 esp_fn_udpsend  equ 11
 esp_fn_udprcv   equ 12
-esp_udpmax      equ 576         ;largest datagram payload handled
-esp_udpmaxl     equ #40         ;576 = #0240
-esp_udpmaxh     equ #02
+esp_udpmax      equ UDPMAX      ;largest datagram payload handled, 576 or 1468
+esp_udpmaxl     equ UDPMAX mod 256
+esp_udpmaxh     equ UDPMAX/256
 
 esp_uconn       ds low_sockmax  ;ESP connection number per daemon socket, 0 = none
 esp_uown        db 255          ;socket that owns the datagram in esp_urxb, 255 = none
@@ -1897,11 +1880,15 @@ lowurx  ld a,e
         ld (lowurxb),a
         ld (lowurxa),hl
         ld hl,(esp_urxn)
+        ld a,b
+        or c
+        jr z,lowurx0            ;BC=0, the whole datagram
         or a
         sbc hl,bc
-        jr nc,lowurx1           ;the datagram is not shorter than the buffer, use BC
-        ld bc,(esp_urxn)
-lowurx1 ld a,b
+        jr nc,lowurx1           ;the datagram is not shorter than BC, copy BC bytes and drop the rest
+lowurx0 ld bc,(esp_urxn)        ;BC larger than the datagram or zero, the whole datagram
+lowurx1 ld (lowurxc),bc         ;the number of bytes copied
+        ld a,b
         or c
         jr z,lowurx2
         ld a,(lowurxb)          ;A=(dest<<4)+src
@@ -1912,11 +1899,13 @@ lowurx1 ld a,b
         ld de,(lowurxa)
         rst #20:dw jmp_bnkcop
 lowurx2 ld a,255
-        ld (esp_uown),a         ;the buffer is free again
+        ld (esp_uown),a         ;the buffer is free again, the datagram is consumed in any case
         ld a,esp_sta_delay
         ld (esp_sta_rx),a       ;RX light
+        ld bc,(lowurxc)
         or a
         ret
+lowurxc dw 0
 
 ;### LOWUSK -> throw the waiting datagram away
 ;### Input      A=socket
@@ -1992,7 +1981,6 @@ espdnp  call espenter
         call espgtb:jr c,espdnp9:ld (esp_dnsres+2),a
         call espgtb:jr c,espdnp9:ld (esp_dnsres+3),a
         call espleave
-        call esphnadd
         ld a,2
         jr espdnp7
 espdnp5 call espskp

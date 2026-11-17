@@ -6,9 +6,10 @@ low_buflen  equ 0
 TLSVERIFY   equ 0    ;1 = the ESP checks the server certificate (needs certs.ar in the ESP), 0 = encrypted but not checked
 ESPDEBUG    equ 0    ;1 = show the slot scan log and FIFO snapshot in the status tab
 LNGSKIP     equ 2    ;2 = direct texts, no language pack at all (use with Dmn-Network-i18n-direct.asm)
+UDPMAX      equ 576  ;largest UDP datagram payload, 576 or 1468 (1468 needs 1.8 KB more transfer area)
 low_sockmax equ 4    ;max parallel TCP connections, must be defined BEFORE Dmn-Network.asm
 low_vermaj  equ 0    ;driver version shown in the daemon info box
-low_vermin  equ 7
+low_vermin  equ 8
 
 org #1000
 

@@ -63,7 +63,7 @@ statxtfrb   db "IP settings",0
 statxtfrc   db "DNS settings",0
 
 statxtfrd   db "Status",0
-statxtfre   db "MSX PcVrs ESP v0.7",0
+statxtfre   db "MSX PcVrs ESP v0.8",0
 statxtfrf   db "Localhost Settings",0
 statxtfrg   db "GR8NET Settings",0
 statxtfrh   db "M4 Board Settings",0
