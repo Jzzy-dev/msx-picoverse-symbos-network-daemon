@@ -926,7 +926,6 @@ lowtop9 pop de
 esp_tlsf        db 0
 esp_tlsl        dw 0
 esp_tlsp        dw 0
-tcphost         equ esp_fwbuf   ;the firmware update is not running while a connection is opened
 
 esptlsd ld a,(esp_tmp+8)
         and #0c
@@ -943,7 +942,7 @@ esptl00 ld a,b
         ld (esp_tlsl+0),a
         xor a
         ld (esp_tlsl+1),a
-        ld hl,tcphost
+        ld hl,esp_fwbuf
         ld (esp_tlsp),hl
         ret
 

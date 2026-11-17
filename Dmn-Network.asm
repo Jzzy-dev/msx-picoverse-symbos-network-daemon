@@ -2375,10 +2375,10 @@ tcpopnc bit 2,a
         add (hl)                ;A=(dest<<4)+src, dest=own bank, src=caller bank
         ld h,b
         ld l,c
-        ld de,tcphost
+        ld de,esp_fwbuf
         ld bc,256
         rst #20:dw jmp_bnkcop
-        ld hl,tcphost
+        ld hl,esp_fwbuf
         ld a,(hl)
         or a
         jr z,tcpopn7            ;empty name
@@ -2389,7 +2389,7 @@ tcpopnh1 ld a,(hl)
         inc hl
         djnz tcpopnh1
         jr tcpopn7              ;no terminator within 255 bytes
-tcpopnh2 ld de,tcphost
+tcpopnh2 ld de,esp_fwbuf
         or a
         sbc hl,de
         inc hl                  ;length including the terminator
