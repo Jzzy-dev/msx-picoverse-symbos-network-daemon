@@ -364,6 +364,7 @@ lowini0 xor a
         ret c
         call espucl0            ;close UDP connections left behind by earlier runs
         call espap              ;read the access point name
+        call espver             ;and the firmware version
         or a
         ret
 
@@ -943,12 +944,12 @@ esptl0  ld e,(hl)
         ld a,d
         cp b
         jr nz,esptl0
-if TLSVERIFY=1
-        ld a,12                 ;TLS and check the certificate
-else
+        ld a,(cfg_tlsver)       ;set in the ESP8266 tab of the settings
+        or a
         ld a,4                  ;TLS, the certificate is not checked
-endif
-        ld (esp_tlsf),a
+        jr z,esptl00
+        ld a,12                 ;TLS and check the certificate
+esptl00 ld (esp_tlsf),a
         ld hl,esp_nohost        ;without a known name only the terminator is sent
         ld (esp_tlsp),hl
         ld hl,1
@@ -2268,4 +2269,223 @@ espdisc call espenter
         xor a
         ret
 espdis9 ld a,2
+        ret
+
+
+;==============================================================================
+;### FIRMWARE VERSION, FIRMWARE UPDATE AND CERTIFICATE UPDATE #################
+;==============================================================================
+; V (version) and E (end of update) are single byte commands. V answers [V][major][minor].
+; Z (firmware) and Y (certificates) start an update, the request is [fn][0][12] then the file size as 8 bytes
+; (little endian) and the first 4 bytes of the file. z sends one block [z][len MSB][len LSB] and the data.
+; Z Y z and E answer with [fn][rc] only. After E the ESP flashes the new data and restarts.
+; I (create the certificate index) is a single byte command that answers [I][rc].
+esp_fwbuf       ds 256          ;one block of the file
+esp_fwsz        ds 4            ;size of the file
+esp_fwmaj       db 0
+esp_fwmin       db 0
+esp_fwfn        db 0
+esp_fwlen       dw 0
+esp_ql          db 0
+esp_qlsv        db 0
+
+;### ESPQRL -> like ESPQRS, but waits up to B x 250 frames
+;### Input      A=fn, B=number of periods, window open
+;### Output     CF=0 A=return code, CF=1 no answer
+espqrl  ld (esp_ql),a
+        ld a,(esp_wdef)
+        ld (esp_qlsv),a
+        ld a,250
+        ld (esp_wdef),a
+espql1  push bc
+        ld a,(esp_ql)
+        call espqrs
+        pop bc
+        jr nc,espql2
+        djnz espql1
+        ld a,(esp_qlsv)
+        ld (esp_wdef),a
+        scf
+        ret
+espql2  push af
+        ld a,(esp_qlsv)
+        ld (esp_wdef),a
+        pop af
+        or a
+        ret
+
+;### ESPVER -> read the firmware version of the ESP, builds the text in cfgtxtver
+;### Output     A=0 ok (esp_fwmaj and esp_fwmin), 2 no answer
+espver  call espenter
+        jr c,espver9
+        ld a,esp_cmd_clrfifo
+        ld (esp_mem_cmd),a
+        ld a,"V"
+        call espsnd
+        ld a,"V"
+        call espqrs             ;the first byte after the V is the major version
+        jr c,espver8
+        ld (esp_fwmaj),a
+        call espgtb
+        jr c,espver8
+        ld (esp_fwmin),a
+        call espleave
+        ld hl,cfgtxtver
+        ld a,(esp_fwmaj)
+        add "0"
+        ld (hl),a
+        inc hl
+        ld (hl),"."
+        inc hl
+        ld a,(esp_fwmin)
+        add "0"
+        ld (hl),a
+        inc hl
+        ld (hl),0
+        xor a
+        ret
+espver8 call espleave
+espver9 ld a,2
+        ret
+
+;### ESPFWBG -> start an update
+;### Input      A="Z" firmware or "Y" certificates, (esp_fwsz)=size of the file, the first 4 bytes of the file in esp_fwbuf
+;### Output     A=0 accepted, 1 the ESP refused it, 2 no answer
+;### Destroyed  all
+espfwbg ld (esp_fwfn),a
+        call espenter
+        jr c,espfwb9
+        ld a,esp_cmd_clrfifo
+        ld (esp_mem_cmd),a
+        ld hl,12
+        ld a,(esp_fwfn)
+        call espcmd
+        ld hl,esp_fwsz
+        ld b,4
+espfwb1 ld a,(hl)
+        call espsnd
+        inc hl
+        djnz espfwb1
+        xor a
+        ld b,4
+espfwb2 call espsnd             ;upper half of the 8 byte size is 0
+        djnz espfwb2
+        ld hl,esp_fwbuf
+        ld b,4
+espfwb3 ld a,(hl)
+        call espsnd
+        inc hl
+        djnz espfwb3
+        ld a,(esp_fwfn)
+        ld b,2
+        call espqrl
+        call espleave
+        jr c,espfwb9
+        or a
+        ld a,0
+        ret z
+        inc a
+        ret
+espfwb9 ld a,2
+        ret
+
+;### ESPFWBK -> send one block of the file
+;### Input      HL=number of bytes in esp_fwbuf (1 to 256)
+;### Output     A=0 written, 1 the ESP refused it, 2 no answer
+;### Destroyed  all
+espfwbk ld (esp_fwlen),hl
+        call espenter
+        jr c,espfwk9
+        ld a,esp_cmd_clrfifo
+        ld (esp_mem_cmd),a
+        ld hl,(esp_fwlen)
+        ld a,"z"
+        call espcmd
+        ld hl,esp_fwbuf
+        ld bc,(esp_fwlen)
+espfwk1 ld a,(hl)
+        ld (esp_mem_tx),a
+        inc hl
+        dec bc
+        ld a,b
+        or c
+        jr nz,espfwk1
+        ld a,"z"
+        ld b,3
+        call espqrl
+        call espleave
+        jr c,espfwk9
+        or a
+        ld a,0
+        ret z
+        inc a
+        ret
+espfwk9 ld a,2
+        ret
+
+;### ESPFWEN -> finish an update, the ESP flashes the new data and restarts, then waits until it answers again
+;### Output     A=0 done, 1 the ESP did not accept the data, 2 no answer
+;### Destroyed  all
+espfwen ld b,60                 ;wait one second
+espfwe0 halt
+        djnz espfwe0
+        call espenter
+        jr c,espfwe9
+        ld a,esp_cmd_clrfifo
+        ld (esp_mem_cmd),a
+        ld a,"E"
+        call espsnd
+        ld a,"E"
+        ld b,8                  ;up to 2000 frames
+        call espqrl
+        call espleave
+        jr c,espfwe9
+        or a
+        jr nz,espfwe8
+        ld c,90                 ;the ESP restarts now, ask for the version until it answers
+espfwe2 ld b,60
+espfwe3 halt
+        djnz espfwe3
+        push bc
+        call espver
+        pop bc
+        or a
+        ret z
+        dec c
+        jr nz,espfwe2
+        jr espfwe9
+espfwe8 ld a,1
+        ret
+espfwe9 ld a,2
+        ret
+
+;### ESPCRT -> after a certificate update the ESP builds its certificate index (command I), this takes a while
+;### Output     A=0 done, 1 failed, 2 no answer
+;### Destroyed  all
+espcrt  ld c,3
+espcrt1 ld b,60                 ;wait one second
+espcrt2 halt
+        djnz espcrt2
+        push bc
+        call espenter
+        jr c,espcrt8
+        ld a,esp_cmd_clrfifo
+        ld (esp_mem_cmd),a
+        ld a,"I"
+        call espsnd
+        ld a,"I"
+        ld b,16                 ;up to 4000 frames
+        call espqrl
+        call espleave
+        pop bc
+        jr c,espcrt3
+        or a
+        ld a,0
+        ret z
+        inc a
+        ret
+espcrt8 pop bc
+espcrt3 dec c
+        jr nz,espcrt1
+        ld a,2
         ret

@@ -196,6 +196,9 @@ else
 cfg_slots   db 1,0      ;pslot=1 as default for denyonet
 endif
 cfg_hide    db 0
+if DRIVER=6
+cfg_tlsver  db TLSVERIFY    ;1 = the ESP checks the certificates of HTTPS servers
+endif
 
 cfg_end     ;***// CONFIG DATA
 
@@ -942,6 +945,292 @@ scnpws  ld hl,scnctlpwp
 scnent  dw 0
 scnpwd  dw 0
 scnzero db 0
+
+;==============================================================================
+;### ESP8266 TAB OF THE SETTINGS (firmware and certificate update) ############
+;==============================================================================
+cfgfwfn dw 0                    ;low byte Z firmware or Y certificates
+cfgfwh  db 0                    ;file handle
+cfgfwsz ds 4                    ;size of the file
+cfgfwbn dw 0                    ;bytes in cfgfwbuf
+cfgfwtk dw 0                    ;size in KB
+cfgfwbc dw 0                    ;blocks sent
+cfgdecp dw 0
+
+;### CFGMSG -> shows a text in the message line of the ESP8266 tab
+;### Input      HL=text (0 terminated, up to 47 characters)
+cfgmsg  ld de,cfgbufms
+cfgmsg1 ld a,(hl)
+        ld (de),a
+        inc hl
+        inc de
+        or a
+        jr nz,cfgmsg1
+cfgmsg2 ld e,12
+        ld a,(cfgwinid)
+        jp SyDesktop_WINDIN
+
+;### CFGMSGX -> shows a text and continues with the main loop
+cfgmsgx call cfgmsg
+        jp prgprz0
+
+;### CFGDEC -> adds the number in HL as decimal text at (cfgdecp), the pointer moves behind the text
+cfgdec  ld de,cfgdect
+        ld bc,-10000
+        call cfgdec1
+        ld bc,-1000
+        call cfgdec1
+        ld bc,-100
+        call cfgdec1
+        ld bc,-10
+        call cfgdec1
+        ld a,l
+        add "0"
+        ld (de),a
+        ld hl,cfgdect
+        ld bc,4*256+5           ;b=most leading zeros to skip, c=characters left
+cfgdec3 ld a,(hl)
+        cp "0"
+        jr nz,cfgdec4
+        inc hl
+        dec c
+        djnz cfgdec3
+cfgdec4 ld de,(cfgdecp)
+cfgdec5 ld a,(hl)
+        ld (de),a
+        inc hl
+        inc de
+        dec c
+        jr nz,cfgdec5
+        ld (cfgdecp),de
+        ret
+cfgdec1 ld a,"0"-1
+cfgdec2 inc a
+        add hl,bc
+        jr c,cfgdec2
+        sbc hl,bc
+        ld (de),a
+        inc de
+        ret
+
+;### CFGADD -> adds the text in HL at (cfgdecp), the pointer moves to the 0
+cfgadd  ld de,(cfgdecp)
+cfgadd1 ld a,(hl)
+        ld (de),a
+        or a
+        jr z,cfgadd2
+        inc hl
+        inc de
+        jr cfgadd1
+cfgadd2 ld (cfgdecp),de
+        ret
+
+;### CFGFWOP -> opens the update file
+;### Output     CF=1 error
+cfgfwop ld hl,cfgbufpa
+        ld a,(App_BnkNum)
+        db #dd:ld h,a
+        call SyFile_FILOPN
+        ret c
+        ld (cfgfwh),a
+        ret
+
+;### CFGFWRD -> reads the next 256 bytes of the update file into cfgfwbuf
+;### Output     CF=1 error, (cfgfwbn)=bytes read
+cfgfwrd ld hl,cfgfwbuf
+        ld bc,256
+        ld de,(App_BnkNum)
+        ld a,(cfgfwh)
+        call SyFile_FILINP
+        ret c
+        ld (cfgfwbn),bc
+        or a
+        ret
+
+;### CFGFWF / CFGFWC -> buttons Firmware and Certificates
+cfgfwf  ld a,"Z"
+        jr cfgfwu
+cfgfwc  ld a,"Y"
+cfgfwu  ld (cfgfwfn),a
+        ld a,(cfgbufpa)
+        or a
+        ld hl,cfgfwm0
+        jp z,cfgmsgx
+        call cfgfwop            ;*** first read of the file to get its size
+        ld hl,cfgfwm1
+        jp c,cfgmsgx
+        ld hl,0
+        ld (cfgfwsz),hl
+        ld (cfgfwsz+2),hl
+cfgfwu1 call cfgfwrd
+        jp c,cfgfwe2
+        ld bc,(cfgfwbn)
+        ld hl,(cfgfwsz)
+        add hl,bc
+        ld (cfgfwsz),hl
+        jr nc,cfgfwu2
+        ld hl,(cfgfwsz+2)
+        inc hl
+        ld (cfgfwsz+2),hl
+cfgfwu2 ld a,(cfgfwbn)
+        or a
+        jr nz,cfgfwu3           ;less than 256 bytes, that was the end
+        ld a,(cfgfwbn+1)
+        dec a
+        jr z,cfgfwu1
+cfgfwu3 ld a,(cfgfwh)
+        call SyFile_FILCLO
+        ld hl,(cfgfwsz)
+        ld a,h
+        or l
+        ld hl,(cfgfwsz+2)
+        or h
+        or l
+        ld hl,cfgfwm3
+        jp z,cfgmsgx
+        ld hl,(cfgfwsz)
+        ld (esp_fwsz),hl
+        ld hl,(cfgfwsz+2)
+        ld (esp_fwsz+2),hl
+        ld a,(cfgfwsz+1)        ;size in KB, (size / 1024) + 1
+        srl a
+        srl a
+        ld l,a
+        ld h,0
+        ld a,(cfgfwsz+2)
+        ld c,a
+        ld b,0
+        sla c
+        rl b
+        sla c
+        rl b
+        sla c
+        rl b
+        sla c
+        rl b
+        sla c
+        rl b
+        sla c
+        rl b
+        add hl,bc
+        inc hl
+        ld (cfgfwtk),hl
+        call cfgfwop            ;*** second read, now the data goes to the ESP
+        ld hl,cfgfwm1
+        jp c,cfgmsgx
+        call cfgfwrd
+        jp c,cfgfwe2
+        ld hl,cfgfwbuf          ;the first 4 bytes tell the ESP what kind of file this is
+        ld de,esp_fwbuf
+        ld bc,4
+        ldir
+        ld hl,cfgfwm4
+        call cfgmsg
+        ld a,(cfgfwfn)
+        call espfwbg
+        or a
+        jr z,cfgfwu4
+        ld hl,cfgfwm5
+        dec a
+        jp z,cfgfwe3
+        ld hl,cfgfwm6
+        jp cfgfwe3
+cfgfwu4 ld hl,0
+        ld (cfgfwbc),hl
+cfgfwl1 ld hl,cfgfwbuf          ;*** send the blocks
+        ld de,esp_fwbuf
+        ld bc,256
+        ldir
+        ld hl,(cfgfwbn)
+        call espfwbk
+        or a
+        jp nz,cfgfwe5           ;a block went wrong, the ESP can only be reset by power
+        ld hl,(cfgfwbc)
+        inc hl
+        ld (cfgfwbc),hl
+        ld a,l
+        and 31
+        call z,cfgfwpr          ;show the progress every 32 blocks
+        call cfgfwrd
+        jp c,cfgfwe5
+        ld a,(cfgfwbn)
+        ld hl,cfgfwbn+1
+        or (hl)
+        jr nz,cfgfwl1
+        ld a,(cfgfwh)
+        call SyFile_FILCLO
+        ld hl,cfgfwm8
+        call cfgmsg
+        call espfwen
+        or a
+        jr z,cfgfwu5
+        ld hl,cfgfwm5
+        dec a
+        jp z,cfgfwe6
+        ld hl,cfgfwm6
+        jp cfgfwe6
+cfgfwu5 ld a,(cfgfwfn)
+        cp "Y"
+        jr nz,cfgfwu6
+        ld hl,cfgfwmb
+        call cfgmsg
+        call espcrt
+        or a
+        jp nz,cfgfwe4           ;no certificate index
+cfgfwu6 xor a
+        call lowini             ;find the ESP again, reads the version and the access point
+        ld a,1
+        call netini0
+        ld a,1
+        ld (netipsc),a
+        ld e,5
+        ld a,(cfgwinid)
+        call SyDesktop_WINDIN   ;new version
+        ld hl,cfgbufms
+        ld (cfgdecp),hl
+        ld a,(cfgfwfn)
+        cp "Y"
+        ld hl,cfgfwmc
+        jr z,cfgfwu7
+        ld hl,cfgfwm9
+        call cfgadd
+        ld hl,cfgtxtver
+cfgfwu7 call cfgadd
+        call cfgmsg2
+        jp prgprz0
+cfgfwe2 ld a,(cfgfwh)           ;*** errors
+        call SyFile_FILCLO
+        ld hl,cfgfwm2
+        jp cfgmsgx
+cfgfwe3 push hl
+        ld a,(cfgfwh)
+        call SyFile_FILCLO
+        pop hl
+        jp cfgmsgx
+cfgfwe5 ld a,(cfgfwh)
+        call SyFile_FILCLO
+cfgfwe4 ld hl,cfgfwma
+        jp cfgmsgx
+cfgfwe6 jp cfgmsgx
+
+;### CFGFWPR -> shows "Sent n of m KB"
+cfgfwpr ld hl,cfgbufms
+        ld (cfgdecp),hl
+        ld hl,cfgfwm7
+        call cfgadd
+        ld hl,(cfgfwbc)
+        srl h
+        rr l
+        srl h
+        rr l                    ;blocks / 4 = KB
+        call cfgdec
+        ld hl,cfgfwmd
+        call cfgadd
+        ld hl,(cfgfwtk)
+        call cfgdec
+        ld hl,cfgfwme
+        call cfgadd
+        jp cfgmsg2
 endif
 
 
@@ -1147,6 +1436,9 @@ cfgipr2 push bc
 
 ;### CFGTAB -> changes config window tab
 cfgtabadr   dw cfgwingrpa,cfgwingrpb
+if DRIVER=6
+            dw cfgwingrpc
+endif
 cfgtabact   db 0
 cfgtab  ld a,(cfgctltba0)
         ld hl,cfgtabact
@@ -3647,6 +3939,29 @@ scntxcn     db "Connecting...",0
 scntxok     db "Connected",0
 scntxnc     db "Could not connect",0
 scntxdi     db "Disconnected",0
+cfgtxttba3  db "ESP8266",0
+cfgtxtvr    db "ESP firmware version",0
+cfgtxttls   db "Check HTTPS server certificates",0
+cfgtxtfrf   db "Update from a file",0
+cfgtxtfl    db "File",0
+cfgtxtbf    db "Firmware",0
+cfgtxtbc    db "Certificates",0
+cfgtxthn    db "Example A:\ESPFW\FW8266.BIN",0
+cfgfwm0     db "Type the file name first",0
+cfgfwm1     db "Cannot open the file",0
+cfgfwm2     db "Cannot read the file",0
+cfgfwm3     db "The file is empty",0
+cfgfwm4     db "Starting, do not power off",0
+cfgfwm5     db "The ESP refused this file",0
+cfgfwm6     db "No answer from the ESP",0
+cfgfwm7     db "Sent ",0
+cfgfwm8     db "Writing, wait a minute",0
+cfgfwm9     db "Done, firmware version ",0
+cfgfwma     db "Failed, switch the MSX off and on",0
+cfgfwmb     db "Building the certificate index",0
+cfgfwmc     db "Certificates updated",0
+cfgfwmd     db " of ",0
+cfgfwme     db " KB",0
 endif
 
 ;### config dialogue text data
@@ -3687,6 +4002,12 @@ if DRIVER=6
 scnbufpw    ds 1+65     ;password
 scnbufms    db "Press Scan to find networks",0
             ds 20
+cfgbufpa    ds 64       ;path of the update file
+cfgbufms    ds 48       ;message line of the ESP8266 tab
+cfgtxtver   db "?",0
+            ds 6
+cfgdect     ds 5
+cfgfwbuf    ds 256      ;block read from the file
 endif
 
 ;==============================================================================
@@ -3989,6 +4310,9 @@ cfgwindat0  dw cfgwingrpa,0,0:ds 136+14
 
 cfgwingrpa  db 35,0:dw cfgwindata,0,0,4*256+3,0,0,2
 cfgwingrpb  db 25,0:dw cfgwindatb,0,0,4*256+3,0,0,2
+if DRIVER=6
+cfgwingrpc  db 14,0:dw cfgwindatc,0,0,4*256+3,0,0,2
+endif
 
 cfgwindata
 ; onclick         type   property   xpos   ypos   xlen   ylen
@@ -4056,9 +4380,35 @@ dw      0,  255*256+32, cfgctlie2,   132,   101,    20,    12, 0    ;input IPe-2
 dw      0,  255*256+ 1, cfgctltxe,   153,   103,     5,     8, 0    ;dot
 dw      0,  255*256+32, cfgctlie3,   155,   101,    20,    12, 0    ;input IPe-3
 
+if DRIVER=6
+cfgwindatc                                                              ;*** ESP8266
+; onclick         type   property   xpos   ypos   xlen   ylen
+dw      0,  255*256+ 0,         2,     0,     0, 10000, 10000, 0    ;0 background
+dw cfgtab,  255*256+20, cfgctltba,     0,     2,   205,    11, 0    ;1 tab
+dw cfgoky,  255*256+16, prgtxtoky,    99,   140,    50,    12, 0    ;2 button ok
+dw cfgcnc,  255*256+16, prgtxtcnc,   152,   140,    50,    12, 0    ;3 button cancel
+dw      0,  255*256+ 1, cfgctlvr,     10,    20,    90,     8, 0    ;4 description firmware version
+dw      0,  255*256+ 1, cfgctlvt,    104,    20,    60,     8, 0    ;5 firmware version
+dw      0,  255*256+17, cfgctltl,     10,    34,   185,     8, 0    ;6 check the certificates
+dw      0,  255*256+ 3, cfgctlff,      0,    50,   205,    84, 0    ;7 frame
+dw      0,  255*256+ 1, cfgctlfl,     10,    62,    20,     8, 0    ;8 description file
+dw      0,  255*256+32, cfgctlpa,     32,    60,   163,    12, 0    ;9 path of the file
+dw cfgfwf,  255*256+16, cfgtxtbf,     10,    78,    90,    12, 0    ;10 button firmware
+dw cfgfwc,  255*256+16, cfgtxtbc,    105,    78,    90,    12, 0    ;11 button certificates
+dw      0,  255*256+ 1, cfgctlms,     10,    96,   185,     8, 0    ;12 message
+dw      0,  255*256+ 1, cfgctlhn,     10,   108,   185,     8, 0    ;13 hint
+endif
+
 ;### config dialogue control data
+if DRIVER=6
+cfgctltba   db 3,2+4+48+64
+else
 cfgctltba   db 2,2+4+48+64
+endif
 cfgctltba0  db 0:dw cfgtxttba1:db -1:dw cfgtxttba2:db -1
+if DRIVER=6
+            dw cfgtxttba3:db -1
+endif
 
 cfgctltxa   dw cfgtxttxa,2+4
 cfgctltxb   dw cfgtxttxb,2+4
@@ -4198,4 +4548,13 @@ scnctlcb    dw 1,0,scnlstcb,0,1,scnrowcb,0,1
 scnrowcb    dw 0,135,0,0
 scnlstcb    dw 0,scntxnl
             ds 9*4                      ;room for 10 lines in total, esp_scmax in the driver
+cfgctlvr    dw cfgtxtvr,2+4
+cfgctlvt    dw cfgtxtver,2+4
+cfgctltl    dw cfg_tlsver,cfgtxttls,256*0+2+4
+cfgctlff    dw cfgtxtfrf,2+4
+cfgctlfl    dw cfgtxtfl,2+4
+cfgctlpa    dw cfgbufpa,0,0,0,0,63
+            db 0
+cfgctlms    dw cfgbufms,2+4
+cfgctlhn    dw cfgtxthn,2+4
 endif

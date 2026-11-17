@@ -2,7 +2,7 @@
 
 Status, working on MSX2 with PicoVerse 2350 (SymbOS 4.0). The daemon finds the card, gets
 the IP settings through DHCP from the ESP, resolves names and moves TCP data. wget and SymTel
-were used successfully. UDP works too (tested with SNTP). Driver version 0.6, shown in the Driver tab as MSX PcVrs ESP v0.6. HTTPS (TLS) is supported through the ESP, see below and the notes there (untested at the time of writing).
+were used successfully. UDP works too (tested with SNTP). Driver version 0.7, shown in the Driver tab as MSX PcVrs ESP v0.7. HTTPS (TLS) is supported through the ESP, see below and the notes there (untested at the time of writing).
 
 ## Build
 Wrapper order, constants file, Dmn-Network-head.asm, Dmn-Network-libs.asm, Dmn-Network.asm
@@ -66,10 +66,12 @@ TLS flag, so the driver decides by port, the program just talks plain data to th
   The driver remembers the last four DNS answers (name and IP) and sends the name that belongs to
   the IP. A connection by IP number without a previous name lookup has no host name, a lot of servers
   refuse that.
-* TLSVERIFY in the wrapper. 0 (default) = encrypted, but the server certificate is not checked,
-  so nobody listening along can read the data, but a man in the middle is not noticed. 1 = the ESP
-  checks the certificate against its certificate store (certs.ar in the ESP, flashed with the firmware
-  tools), a connection then fails if the store is missing or the certificate is not known.
+* Certificate check - the check box "Check HTTPS server certificates" in the ESP8266 tab of the settings
+  (Network settings button) switches it on and off, it is saved in network.ini. Off (default) = encrypted,
+  but the server certificate is not checked, so nobody listening along can read the data, but a man in the
+  middle is not noticed. On = the ESP checks the certificate against its certificate store (certs.ar in the
+  ESP, put there by the certificate update below), a connection then fails if the store is missing, the
+  certificate is not known or the date of the ESP is wrong. TLSVERIFY in the wrapper is only the start value.
 * Limits of the ESP: only one TLS connection at a time, TLS 1.2 at most, the handshake takes a few
   seconds, big pages and servers with very large certificate chains can fail on the little RAM.
   A failed TLS open shows up like any other refused connection.
@@ -88,6 +90,22 @@ The status window has a fourth tab, Scan, modelled on the Scan tab that ducasp a
 * The ESP stores the credentials in its own flash, the daemon does not save them.
 * The scan code was run in an emulator against a scripted ESP (busy, ready, none, no answer, full table).
   The window layout itself has not been tried on a real SymbOS yet.
+
+## ESP8266 tab of the settings (version 0.7)
+Network settings has a third tab, ESP8266.
+* ESP firmware version - read with the V command at the start and after an update.
+* Check HTTPS server certificates - see the TLS notes.
+* Update from a file - type the path of the file in SymbOS notation, for example A:\ESPFW\FW8266.BIN,
+  then press Firmware (fw8266.bin) or Certificates (cert8266.bin). Both files are in the ESPFW folder of
+  ducasp's packs. The daemon reads the file twice (first for the size), starts the update with Z or Y,
+  sends it in blocks of 256 bytes (z, every block is acknowledged), ends it with E and waits until the ESP
+  answers again. After a certificate update it asks the ESP to build the certificate index (I).
+  Updating the firmware erases the certificates, so update them again afterwards.
+* The daemon window does not react while it works, a firmware update takes a few minutes. Do not switch
+  off. The ESP cannot abort an update, if a block fails the message says to switch the MSX off and on.
+* The protocol follows CFGESP of ducasp and the ESP firmware source. The update code was tested in an
+  emulator against a scripted ESP (start, blocks, refusal, no answer, restart, certificate index), not
+  yet with a real ESP, and the tab itself has not been tried on a real SymbOS.
 
 ## WiFi state and signal strength
 The ESP firmware has no signal strength command. What it offers is the state of the WiFi connection and the
