@@ -2081,6 +2081,11 @@ netdns  ld a,(ix+sckdatsta)
         ld a,(hl)
         or a
         jp nz,netpol0               ;another request is still proceeded -> keep it waiting
+if DRIVER=6
+        ld a,(esp_pend)             ;the ESP is busy with a long request -> keep it waiting
+        or a
+        jp nz,netpol0
+endif
         ld (hl),1
         ld (ix+sckdatsta),sckstadpr
         ld a,(App_BnkNum)
@@ -2200,6 +2205,7 @@ netres1 ld a,(hl)
         pop bc
 netres2 ld de,sckdatlen
         add hl,de
+        inc c                   ;next socket
         djnz netres1
         xor a
         ld (dnslupflg),a
@@ -2297,7 +2303,17 @@ sckdec  push hl
 ;###            CF=1 error, A=error code
 ;### Destroyed  BC,DE,HL,IX,IY
 tcpopns ds 8
-tcpopn  push af
+tcpopn
+if DRIVER=6
+        ld c,a
+        ld a,(esp_pend)         ;a long request is outstanding, refuse before a socket is taken
+        or a
+        ld a,neterrcon
+        scf
+        ret nz
+        ld a,c
+endif
+        push af
         call netprt
         pop af
         ld (tcpopns+0),hl
@@ -2325,6 +2341,21 @@ tcpopn  push af
         ld de,256*sckstatop+0
 tcpopn1 ld (iy+sckdatsta),d
         ld ix,tcpopns
+if DRIVER=6
+        push iy
+        push af                 ;a=socket
+        call lowtop
+        pop bc                  ;b=socket
+        pop iy
+        jr c,tcpopn3
+        ld a,b
+        ld (netscknum),a
+        ret
+tcpopn3 ld (iy+sckdattyp),scktypfre     ;the ESP refused it, give the socket back
+        call sckdec
+        scf
+        ret
+else
         push af
         call lowtop
         pop bc
@@ -2332,6 +2363,7 @@ tcpopn1 ld (iy+sckdatsta),d
         ld a,b
         ld (netscknum),a
         ret
+endif
 tcpopn2 ld de,256*sckstatli+1           ;** server
         jr tcpopn1
 
@@ -2343,11 +2375,22 @@ tcpopn2 ld de,256*sckstatli+1           ;** server
 tcpclo  ld c,scktyptcp
         call sckget
         ret c
+if DRIVER=6
+        push iy
+        call lowtcl             ;the driver first, when it is busy the socket stays
+        pop iy
+        ret c
+        ld (iy+sckdattyp),scktypfre
+        call sckdec
+        xor a
+        ret
+else
         ld (iy+sckdattyp),scktypfre
         call sckdec
         call lowtcl
         or a
         ret
+endif
 
 ;### TCPRCV -> TCP receive from connection
 ;### Input      A=socket, BC=length, E,HL=memory
@@ -2381,6 +2424,9 @@ tcprcv1 pop hl
         ld a,d
 tcprcv2 call lowtrx
         pop iy
+if DRIVER=6
+        jr c,tcprcvb            ;the driver is busy with a long request, nothing delivered
+endif
         ld l,c
         ld h,b
         pop bc
@@ -2394,6 +2440,14 @@ tcprcv3 ld a,l
 tcprcv4 ld l,(iy+sckdatrcv+0)
         ld h,(iy+sckdatrcv+1)
         jr tcprcv3
+if DRIVER=6
+tcprcvb pop bc                  ;forget the requested size
+        ld l,(iy+sckdatrcv+0)
+        ld h,(iy+sckdatrcv+1)   ;the data is still waiting
+        ld bc,0
+        or a
+        ret
+endif
 
 ;### TCPSND -> TCP send to connection
 ;### Input      A=socket, BC=length, E,HL=memory
@@ -2427,11 +2481,22 @@ tcpsnd  push bc
 tcpdis  ld c,scktyptcp
         call sckget
         ret c
+if DRIVER=6
+        push iy
+        call lowtdc             ;the driver first, when it is busy the socket stays
+        pop iy
+        ret c
+        ld (iy+sckdattyp),scktypfre
+        call sckdec
+        xor a
+        ret
+else
         ld (iy+sckdattyp),scktypfre
         call sckdec
         call lowtdc
         or a
         ret
+endif
 
 ;### TCPSTA -> TCP status of connection
 ;### Input      A=socket
@@ -2490,6 +2555,11 @@ tcpfls  call sckget
 ;### Destroyed  BC,DE,HL,IX,IY
 udpopn
 if DRIVER=6
+        ld a,(esp_pend)         ;a long request is outstanding, refuse before a socket is taken
+        or a
+        ld a,neterrcon
+        scf
+        ret nz
         push de                 ;e=bank
         call netprt
         ld a,scktypudp
@@ -2532,11 +2602,22 @@ endif
 udpclo  ld c,scktypudp
         call sckget
         ret c
+if DRIVER=6
+        push iy
+        call lowucl             ;the driver first, when it is busy the socket stays
+        pop iy
+        ret c
+        ld (iy+sckdattyp),scktypfre
+        call sckdec
+        xor a
+        ret
+else
         ld (iy+sckdattyp),scktypfre
         call sckdec
         call lowucl
         or a
         ret
+endif
 
 ;### UDPSTA -> UDP status of session
 ;### Input      A=socket

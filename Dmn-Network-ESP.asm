@@ -1133,7 +1133,16 @@ lowtst  ld (lowtsts),a
         cp c
         jr nz,lowtst1
         call esppol             ;try to finish the pending open
-lowtst1 ld a,(lowtsts)
+lowtst1 ld a,(esp_pend)         ;a long request is outstanding, no other ESP command may be sent
+        or a
+        jr z,lowtst1a
+        cp esp_fn_tcpopen
+        jp nz,lowtstz           ;pending DNS, report in process
+        ld a,(esp_pendsck)
+        ld hl,lowtsts
+        cp (hl)
+        jp nz,lowtstz           ;pending open of another socket, report in process
+lowtst1a ld a,(lowtsts)
         call espslot
         ld a,(hl)
         or a
@@ -1192,7 +1201,19 @@ lowtsts db 0
 ;### Destroyed  AF,DE,IX,IY
 ;  Data is bounced through esp_buf in chunks; it is copied OUT of the caller's
 ;  bank with jmp_bnkcop BEFORE the window is opened.
-lowttx  ld (lowttxs),a
+lowttx  push af
+        ld a,(esp_pend)         ;a long request is outstanding, send nothing now
+        or a
+        jr z,lowttx0
+        pop af
+        ld h,b
+        ld l,c                  ;HL=nothing sent, all bytes remaining
+        ld bc,0
+        ld a,h
+        or l
+        ret
+lowttx0 pop af
+        ld (lowttxs),a
         ld (lowttxb),de         ;e=bank
         ld (lowttxl),bc
         ld (lowttxa),hl
@@ -1277,7 +1298,16 @@ lowttxc dw 0
 lowtsk  ld d,1
         jr lowtrx0
 lowtrx  ld d,0
-lowtrx0 ld (lowtrxm),de         ;d=mode(1=skip) e=bank
+lowtrx0 push af
+        ld a,(esp_pend)         ;a long request is outstanding, deliver nothing now
+        or a
+        jr z,lowtrx0a
+        pop af
+        ld bc,0
+        scf                     ;CF=1 tells the daemon nothing was delivered
+        ret
+lowtrx0a pop af
+        ld (lowtrxm),de         ;d=mode(1=skip) e=bank
         ld (lowtrxs),a
         ld (lowtrxl),bc
         ld (lowtrxa),hl
@@ -1357,8 +1387,9 @@ lowtrxw call espleave
 lowtrx9 ld a,(lowtrxs)          ;remaining bytes = ask the ESP
         call espstq
         ld bc,0
-        ret c
+        jr c,lowtrx9a
         ld bc,(esp_st_avail)
+lowtrx9a or a                   ;CF=0, delivered
         ret
 lowtrxm dw 0                    ;low=bank (E), high=mode (D)
 lowtrxs db 0
@@ -1373,7 +1404,15 @@ lowtrxn dw 0
 lowtdc  ld c,esp_fn_tcpabort
         jr lowtcl0
 lowtcl  ld c,esp_fn_tcpclose
-lowtcl0 push bc
+lowtcl0 ld b,a
+        ld a,(esp_pend)         ;a long request is outstanding, the daemon keeps the socket
+        or a
+        ld a,b
+        jr z,lowtcl1
+        ld a,neterrcon
+        scf
+        ret
+lowtcl1 push bc
         call espslot
         ld a,(hl)
         ld b,a
@@ -1382,7 +1421,7 @@ lowtcl0 push bc
         or a
         ret z                   ;nothing open on the ESP side
         call espenter
-        ret c
+        jr c,lowtcl9            ;no hardware, nothing more to do
         ld a,e
         ld hl,1
         call espcmd
@@ -1392,7 +1431,7 @@ lowtcl0 push bc
         call esprsp
         call nc,espskp
         call espleave
-        xor a
+lowtcl9 xor a
         ret
 
 ;### LOWTFL -> flush - the ESP has no send buffer to flush
@@ -1554,7 +1593,14 @@ espuslt ld c,a
 ;### Output     CF=0 ok, CF=1 A=error
 ;### Destroyed  AF,BC,DE,HL,IX
 lowuop  push af
-        ld a,(ix+0)             ;read the parameter before the slot window opens
+        ld a,(esp_pend)         ;a long request is outstanding, try again later
+        or a
+        jr z,lowuop1
+        pop af
+        ld a,neterrcon
+        scf
+        ret
+lowuop1 ld a,(ix+0)             ;read the parameter before the slot window opens
         ld (esp_tmp+0),a
         ld a,(ix+1)
         ld (esp_tmp+1),a
@@ -1597,7 +1643,15 @@ lowuop0 equ lowuop
 ;### LOWUCL -> close UDP socket
 ;### Input      A=socket
 ;### Output     A=0
-lowucl  ld (esp_usck),a
+lowucl  ld c,a
+        ld a,(esp_pend)         ;a long request is outstanding, the daemon keeps the socket
+        or a
+        ld a,c
+        jr z,lowucl0
+        ld a,neterrcon
+        scf
+        ret
+lowucl0 ld (esp_usck),a
         call espuslt
         ld a,(hl)
         ld (esp_ucn),a
@@ -1612,7 +1666,7 @@ lowucl1 ld a,(esp_ucn)
         or a
         ret z
         call espenter
-        ret c
+        jr c,lowucl9            ;no hardware, nothing more to do
         ld hl,1
         ld a,esp_fn_udpclose
         call espcmd
@@ -1622,7 +1676,7 @@ lowucl1 ld a,(esp_ucn)
         call esprsp
         call nc,espskp
         call espleave
-        xor a
+lowucl9 xor a
         ret
 
 ;### ESPUCL0 -> UDP_CLOSE with connection 0 = close all transient UDP connections of the ESP
@@ -1643,7 +1697,16 @@ espucl0 call espenter
 ;### Input      A=socket, HL=data, E=data bank, BC=length, IX=destination (IP 4 bytes, port 2 bytes)
 ;### Output     CF=0 sent, CF=1 A=error
 ;### Destroyed  AF,BC,DE,HL,IX,IY
-lowutx  ld (esp_utxs),a
+lowutx  push af
+        ld a,(esp_pend)         ;a long request is outstanding, try again later
+        or a
+        jr z,lowutx9
+        pop af
+        ld a,neterrcon
+        scf
+        ret
+lowutx9 pop af
+        ld (esp_utxs),a
         ld a,e
         ld (lowutxb),a
         ld (esp_utxl),bc
@@ -1791,7 +1854,16 @@ lowust  ld (esp_usck),a
         jr z,lowust5            ;a datagram of this socket is waiting
         inc a
         jp nz,lowusti           ;the buffer holds the datagram of another socket
-        ld hl,esp_upoll
+        ld a,(esp_pend)         ;a long request is outstanding, do not poll the ESP now
+        or a
+        jr z,lowust1
+        ld bc,0
+        ld ix,0
+        ld iy,0
+        ld de,0
+        xor a                   ;0 = in process, no state change event
+        ret
+lowust1 ld hl,esp_upoll
         dec (hl)
         jr nz,lowusti
         ld (hl),2               ;ask the ESP on every 2nd poll while an application waits
