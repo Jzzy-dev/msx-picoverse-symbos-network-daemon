@@ -129,8 +129,7 @@ The status window has a fourth tab, Scan, modelled on the Scan tab that ducasp a
 Network settings has a third tab, ESP8266.
 * ESP firmware version - read with the V command at the start and after an update.
 * Check HTTPS server certificates - see the TLS notes.
-* Update from a file - press Firmware... (fw8266.bin) or Certificates... (cert8266.bin, mask AR in the
-  selector). The SymbOS file selector opens, pick the file and the update starts at once. The chosen path is
+* Update from a file - press Firmware... (fw8266.bin) or Certificates... (cert8266.bin). The SymbOS file selector opens, pick the file and the update starts at once. The chosen path is
   shown in the file line. Both files are in the ESPFW folder of ducasp's packs. The daemon reads the file
   twice (first for the size), starts the update with Z or Y, sends it in blocks of 256 bytes (z, every
   block is acknowledged), ends it with E and waits until the ESP answers again. After a certificate update

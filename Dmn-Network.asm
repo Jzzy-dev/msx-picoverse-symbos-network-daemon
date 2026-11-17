@@ -4315,7 +4315,7 @@ cfgtxtbc    db "Certificates...",0
 cfgtxthn    db "The buttons ask for the file",0
 cfgfwmf     db "Cannot open the file selector",0
 cfgselmz    db "BIN",0
-cfgselmy    db "AR",0,0
+cfgselmy    db "BIN",0
 updtit1     db "Updating the ESP firmware",0
 updtit2     db "Updating the ESP certificates",0
 cfgfwm1     db "Cannot open the file",0
