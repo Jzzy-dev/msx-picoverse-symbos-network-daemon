@@ -542,15 +542,21 @@ staupd4 ld (ix+4),c
         jp SyDesktop_WINDIN
 staupd6                         ;*** DRIVER TAB
 if DRIVER=6
-        ld a,(esp_ssidchg)      ;the access point text changed, redraw that line (control 17)
+        ld a,(esp_ssidchg)      ;the access point text changed, redraw that line (control 17, 5 on the Scan tab)
         or a
         jr z,staupd6a
         xor a
         ld (esp_ssidchg),a
         ld e,17
-        ld a,(stawinid)
+        ld a,(stactltba0)
+        cp 3
+        jr nz,staupd6b
+        ld e,5
+staupd6b ld a,(stawinid)
         call SyDesktop_WINDIN
-staupd6a
+staupd6a ld a,(stactltba0)
+        cp 3
+        ret z                   ;the Scan tab has nothing else to update
 endif
 if DRIVER=0
         ld a,r
@@ -723,6 +729,9 @@ staapl2 ;...message "wrong mac"
 
 ;### STATAB -> changes status window tab
 statabadr   dw stawingrpa,stawingrpb,stawingrpc
+if DRIVER=6
+            dw stawingrpd
+endif
 statabact   db 0
 statab  ld a,(stactltba0)
         ld hl,statabact
@@ -762,6 +771,177 @@ stapws  ld hl,stactlia1p
         ld a,(stawinid)
         call SyDesktop_WINDIN
         jp prgprz0
+endif
+
+if DRIVER=6
+;==============================================================================
+;### SCAN TAB (WiFi networks) #################################################
+;==============================================================================
+
+;### SCNMSG -> shows a text in the message line of the Scan tab
+;### Input      HL=text (0 terminated, up to 43 characters)
+scnmsg  ld de,scnbufms
+scnmsg1 ld a,(hl)
+        ld (de),a
+        inc hl
+        inc de
+        or a
+        jr nz,scnmsg1
+scnmsg2 ld e,13
+        ld a,(stawinid)
+        jp SyDesktop_WINDIN
+
+;### SCNMSGX -> shows a text and continues with the main loop
+scnmsgx call scnmsg
+        jp prgprz0
+
+;### SCNLST -> builds the list of the combo box from the table of the driver
+scnlst  ld a,(esp_scn)
+        or a
+        jr z,scnlst3
+        ld b,a
+        ld hl,esp_sctab+2
+        ld de,scnlstcb
+        ld c,0
+scnlst1 ld a,c
+        ld (de),a
+        inc de
+        xor a
+        ld (de),a
+        inc de
+        ld a,l
+        ld (de),a
+        inc de
+        ld a,h
+        ld (de),a
+        inc de
+        push de
+        ld de,esp_scsiz
+        add hl,de
+        pop de
+        inc c
+        djnz scnlst1
+        ld a,(esp_scn)
+        jr scnlst4
+scnlst3 ld hl,0                 ;nothing found, the list shows one dummy line
+        ld (scnlstcb),hl
+        ld hl,scntxnl
+        ld (scnlstcb+2),hl
+        ld a,1
+scnlst4 ld l,a
+        ld h,0
+        ld (scnctlcb),hl        ;number of lines
+        ld hl,0
+        ld (scnctlcb+12),hl     ;first line is selected
+        ld e,6
+        ld a,(stawinid)
+        jp SyDesktop_WINDIN
+
+;### SCNSCAN -> scan button, looks for access points
+scnscan ld hl,scntxsc
+        call scnmsg
+        call espscan
+        or a
+        jr z,scnsca2
+        push af
+        xor a
+        ld (esp_scn),a
+        call scnlst
+        pop af
+        ld hl,scntxno           ;1 = nothing in range
+        dec a
+        jp z,scnmsgx
+        ld hl,scntxfl           ;2 = no answer
+        jp scnmsgx
+scnsca2 call scnlst
+        ld a,(esp_scn)
+        ld hl,scnbufms
+        call clcn08
+        ex de,hl
+        ld hl,scntxfd
+scnsca3 ld a,(hl)
+        ld (de),a
+        inc hl
+        inc de
+        or a
+        jr nz,scnsca3
+        call scnmsg2
+        jp prgprz0
+
+;### SCNCONN -> connect button, joins the selected network
+scnconn ld a,(esp_scn)
+        or a
+        ld hl,scntxse
+        jp z,scnmsgx            ;scan first
+        ld a,(scnctlcb+12)
+        ld c,a
+        ld a,(esp_scn)
+        dec a
+        cp c
+        jr nc,scncon0
+        ld c,0                  ;selection out of range, take the first one
+scncon0 ld hl,esp_sctab
+        ld de,esp_scsiz
+        inc c
+scncon1 dec c
+        jr z,scncon2
+        add hl,de
+        jr scncon1
+scncon2 ld (scnent),hl
+        inc hl
+        ld a,(hl)               ;encrypted?
+        ld de,scnzero
+        or a
+        jr z,scncon3
+        ld de,scnbufpw
+        ld a,(de)
+        or a
+        ld hl,scntxpw           ;a password is needed
+        jp z,scnmsgx
+scncon3 ld (scnpwd),de
+        ld hl,scntxcn
+        call scnmsg
+        ld hl,(scnent)
+        ld de,(scnpwd)
+        call espjoin
+        push af
+        call scnrefr
+        pop af
+        ld hl,scntxok
+        or a
+        jp z,scnmsgx
+        ld hl,scntxnc
+        dec a
+        jp z,scnmsgx
+        ld hl,scntxfl
+        jp scnmsgx
+
+;### SCNDISC -> disconnect button, leaves the access point and forgets it
+scndisc call espdisc
+        call scnrefr
+        ld hl,scntxdi
+        jp scnmsgx
+
+;### SCNREFR -> after a join or leave, back to "no IP" so the daemon reads the IP data again
+scnrefr ld a,1
+        call netini0
+        ld a,1
+        ld (netipsc),a
+        jp espap
+
+;### SCNPWS -> show/hide password
+scnpws  ld hl,scnctlpwp
+        ld a,(hl)
+        xor 1
+        ld (hl),a
+        ld e,11
+        ld a,(stawinid)
+        call SyDesktop_WINDIN
+        jp prgprz0
+
+scnent  dw 0
+scnpwd  dw 0
+scnzero db 0
 endif
 
 
@@ -3444,6 +3624,26 @@ statxttxx   db "Key",0
 statxttxy   db "Show",0
 statxttxz   db "Connect",0
 statxttza   db "Cable plugged",0
+if DRIVER=6
+statxttba4  db "Scan",0
+scntxfr     db "WiFi networks",0
+scntxbs     db "Scan",0
+scntxbc     db "Connect",0
+scntxbd     db "Disconnect",0
+scntxpt     db "Password",0
+scntxsh     db "Show password",0
+scntxnl     db "(no networks)",0
+scntxsc     db "Scanning...",0
+scntxno     db "No networks found",0
+scntxfl     db "No answer from the ESP",0
+scntxfd     db " networks found",0
+scntxse     db "Press Scan first",0
+scntxpw     db "Enter the password",0
+scntxcn     db "Connecting...",0
+scntxok     db "Connected",0
+scntxnc     db "Could not connect",0
+scntxdi     db "Disconnected",0
+endif
 
 ;### config dialogue text data
 cfgtxttxe   db ".",0
@@ -3478,6 +3678,11 @@ stabufim5   ds 1+2
 if M4BOARD=1
 stabufia0   ds 1+32 ;ssid/password
 stabufia1   ds 1+65
+endif
+if DRIVER=6
+scnbufpw    ds 1+65     ;password
+scnbufms    db "Press Scan to find networks",0
+            ds 20
 endif
 
 ;==============================================================================
@@ -3514,6 +3719,10 @@ elseif M4BOARD=1
 stawingrpc  db 25,0:dw stawindatc,0,0,4*256+3,0,0,2
 elseif DRIVER=4
 stawingrpc  db 30,0:dw stawindatc,0,0,4*256+3,0,0,2
+endif
+
+if DRIVER=6
+stawingrpd  db 14,0:dw stawindatd,0,0,4*256+3,0,0,2
 endif
 
 stamendat   dw 2, 1+4,stamentxt1,stamendat1,0,     1+4,stamentxt2,stamendat2,0
@@ -3740,6 +3949,25 @@ dw staapl,  255*256+16, statxtbtc,   109,    85,    36,    12, 0    ;button appl
 
 endif
 
+if DRIVER=6
+stawindatd                                                              ;*** SCAN
+; onclick         type   property   xpos   ypos   xlen   ylen
+dw      0,  255*256+ 0,         2,     0,     0, 10000, 10000, 0    ;0 background
+dw statab,  255*256+20, stactltba,     0,     2,   205,    11, 0    ;1 tab
+dw stahid,  255*256+16, statxtbta,     3,   107,    56,    12, 0    ;2 button hide
+dw stacfg,  255*256+16, statxtbtb,    65,   107,    87,    12, 0    ;3 button settings
+dw      0,  255*256+ 3, scnctlfr,      0,    16,   155,    90, 0    ;4 frame
+dw      0,  255*256+ 1, stactltxr,    10,    26,   140,     8, 0    ;5 WiFi access point
+dw      0,  255*256+42, scnctlcb,     10,    37,   135,    10, 0    ;6 list of networks
+dw scnscan, 255*256+16, scnctlbs,     10,    52,    36,    12, 0    ;7 button scan
+dw scnconn, 255*256+16, scnctlbc,     49,    52,    44,    12, 0    ;8 button connect
+dw scndisc, 255*256+16, scnctlbd,     96,    52,    49,    12, 0    ;9 button disconnect
+dw      0,  255*256+ 1, scnctlpt,     10,    69,    38,     8, 0    ;10 description password
+dw      0,  255*256+32, scnctlpw,     50,    67,    95,    12, 0    ;11 password input
+dw scnpws,  255*256+17, scnctlsh,     50,    81,    95,     8, 0    ;12 show password
+dw      0,  255*256+ 1, scnctlms,     10,    94,   140,     8, 0    ;13 message
+endif
+
 
 stactlpsl   dw 04,0,stalstpsl,0,1,starowpsl,0,1
 starowpsl   dw 0,17,0,0
@@ -3880,8 +4108,15 @@ cfgerrmsg   dw cfgerrtxt0,4*1+2,cfgerrtxt1,4*1+2,cfgerrtxt2,4*1+2
 
 
 ;### status control data
+if DRIVER=6
+stactltba   db 4,2+4+48+64
+else
 stactltba   db 3,2+4+48+64
+endif
 stactltba0  db 0:dw statxttba1:db -1:dw statxttba2:db -1:dw statxttba3:db -1
+if DRIVER=6
+            dw statxttba4:db -1
+endif
 
 stactlfra   dw statxtfra,2+4
 stactlfrb   dw statxtfrb,2+4
@@ -3946,4 +4181,20 @@ stactlia1   dw stabufia1,0,0,0,0,64:stactlia1p db 1
 
 stactlshs   db 0
 stactlshc   dw stactlshs,statxttxy,256*0+2+4
+endif
+if DRIVER=6
+scnctlfr    dw scntxfr,2+4
+scnctlbs    dw scntxbs,2+4
+scnctlbc    dw scntxbc,2+4
+scnctlbd    dw scntxbd,2+4
+scnctlpt    dw scntxpt,2+4
+scnctlms    dw scnbufms,2+4
+scnctlpw    dw scnbufpw,0,0,0,0,64
+scnctlpwp   db 1
+scnshs      db 0
+scnctlsh    dw scnshs,scntxsh,256*0+2+4
+scnctlcb    dw 1,0,scnlstcb,0,1,scnrowcb,0,1
+scnrowcb    dw 0,135,0,0
+scnlstcb    dw 0,scntxnl
+            ds 9*4                      ;room for 10 lines in total, esp_scmax in the driver
 endif

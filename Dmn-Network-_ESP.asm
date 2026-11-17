@@ -8,7 +8,7 @@ ESPDEBUG    equ 0    ;1 = show the slot scan log and FIFO snapshot in the status
 LNGSKIP     equ 2    ;2 = direct texts, no language pack at all (use with Dmn-Network-i18n-direct.asm)
 low_sockmax equ 4    ;max parallel TCP connections, must be defined BEFORE Dmn-Network.asm
 low_vermaj  equ 0    ;driver version shown in the daemon info box
-low_vermin  equ 5
+low_vermin  equ 6
 
 org #1000
 

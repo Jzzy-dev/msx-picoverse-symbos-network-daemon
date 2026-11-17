@@ -2,7 +2,7 @@
 
 Status, working on MSX2 with PicoVerse 2350 (SymbOS 4.0). The daemon finds the card, gets
 the IP settings through DHCP from the ESP, resolves names and moves TCP data. wget and SymTel
-were used successfully. UDP works too (tested with SNTP). Driver version 0.5, shown in the Driver tab as MSX PcVrs ESP v0.5. HTTPS (TLS) is supported through the ESP, see below and the notes there (untested at the time of writing).
+were used successfully. UDP works too (tested with SNTP). Driver version 0.6, shown in the Driver tab as MSX PcVrs ESP v0.6. HTTPS (TLS) is supported through the ESP, see below and the notes there (untested at the time of writing).
 
 ## Build
 Wrapper order, constants file, Dmn-Network-head.asm, Dmn-Network-libs.asm, Dmn-Network.asm
@@ -73,6 +73,21 @@ TLS flag, so the driver decides by port, the program just talks plain data to th
 * Limits of the ESP: only one TLS connection at a time, TLS 1.2 at most, the handshake takes a few
   seconds, big pages and servers with very large certificate chains can fail on the little RAM.
   A failed TLS open shows up like any other refused connection.
+
+## Scan tab (version 0.6)
+The status window has a fourth tab, Scan, modelled on the Scan tab that ducasp added to his SM-X daemon.
+* Scan looks for access points (ESP command S, then s until the scan is ready). Up to 10 names are kept,
+  hidden networks and double names are left out, encrypted networks get a * behind the name.
+* Choose a network in the list, type the password (Show password unmasks it) and press Connect.
+  The ESP joins the network (command A, up to about 12 seconds). Open networks need no password.
+* Disconnect makes the ESP leave the access point and forget it (command a).
+* After Connect or Disconnect the daemon goes back to "no IP" and reads the IP data from the ESP again,
+  the line "WiFi: name" at the top shows the access point.
+* S, s, a and g are single byte commands without a length field, A has the normal header. The answer of s has no
+  length field either, it is [s][rc][count] and then name,0,O or E for every network.
+* The ESP stores the credentials in its own flash, the daemon does not save them.
+* The scan code was run in an emulator against a scripted ESP (busy, ready, none, no answer, full table).
+  The window layout itself has not been tried on a real SymbOS yet.
 
 ## WiFi state and signal strength
 The ESP firmware has no signal strength command. What it offers is the state of the WiFi connection and the

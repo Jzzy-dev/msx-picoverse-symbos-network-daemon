@@ -1954,3 +1954,318 @@ espdnr2 xor a
         ld a,neterrdto          ;ESP gives no detail on DNS failure
         scf
         ret
+
+
+;==============================================================================
+;### WIFI SCAN AND JOIN (Scan tab) ############################################
+;==============================================================================
+; The commands S (scan), s (scan result), a (forget access point) and g (status) are single bytes,
+; they have no length field. A (join) has the normal header. S, A and a answer with just [fn][rc],
+; s answers with [s][rc][count] and then count times  name,0,'O' or 'E'  without any length field.
+;
+; The ESP keeps the names in the table below, one entry is 37 bytes
+;   +0 length of the name, +1 encrypted (0 or 1), +2.. name, then " *" if encrypted, then 0
+esp_scmax       equ 10          ;networks that are kept
+esp_scsiz       equ 37
+esp_scn         db 0            ;number of entries in the table
+esp_sctab       ds esp_scmax*esp_scsiz
+esp_scc         db 0            ;networks the ESP still has to send
+esp_sce         dw 0            ;entry that is filled now
+esp_snp         dw 0            ;where the next character of the name goes
+esp_scl         db 0            ;length of the name so far
+esp_jent        dw 0            ;join - entry
+esp_jpwd        dw 0            ;join - password
+esp_jpl         db 0            ;join - length of the password
+esp_jtl         db 0            ;join - length of the request data
+
+;### ESPQRS -> wait for a short response [fn][rc]
+;### Input      A=fn, window open, (esp_wdef)=frames to wait
+;### Output     CF=0 A=return code, CF=1 no answer
+esp_qfn         db 0
+espqrs  ld (esp_qfn),a
+        ld a,(esp_wdef)
+        ld (esp_wcnt),a
+        ld hl,esp_skipmax
+        ld (esp_skipn),hl
+espqrs1 call espgtw
+        ret c
+        ld hl,esp_qfn
+        cp (hl)
+        jr z,espqrs2
+        ld hl,(esp_skipn)
+        dec hl
+        ld (esp_skipn),hl
+        ld a,h
+        or l
+        jr nz,espqrs1
+        scf
+        ret
+espqrs2 call espgtb
+        ret
+
+;### ESPGTQ -> read one byte of the scan result, waits up to 3 frames
+;### Output     CF=0 A=byte, CF=1 nothing came
+espgtq  ld a,3
+        ld (esp_wcnt),a
+        jp espgtw
+
+;### ESPSCAN -> scan for access points, fills the table
+;### Output     A=0 networks found (esp_scn entries), 1 no network in range, 2 no answer
+;### Destroyed  all
+espscan call espenter
+        jr c,espscn9
+        ld a,esp_cmd_clrfifo
+        ld (esp_mem_cmd),a
+        ld a,"S"
+        call espsnd
+        ld a,"S"
+        call espqrs
+        call espleave
+        jr c,espscn9
+        ld b,30                 ;poll for the result, 30 x 25 frames at most
+espscn1 push bc
+        ld b,25
+espscn2 halt
+        djnz espscn2
+        call espenter
+        jr c,espscn8
+        ld a,esp_cmd_clrfifo
+        ld (esp_mem_cmd),a
+        ld a,"s"
+        call espsnd
+        ld a,"s"
+        call espqrs
+        jr c,espscn7
+        or a
+        jr z,espscn5            ;0 = result follows
+        cp 3
+        jr z,espscn6            ;3 = scan still running
+        call espleave           ;2 = no network
+        pop bc
+        ld a,1
+        ret
+espscn5 call espscrd
+        call espleave
+        pop bc
+        ld a,(esp_scn)
+        or a
+        ld a,0
+        ret nz
+        inc a                   ;only hidden networks
+        ret
+espscn6 call espleave
+        pop bc
+        djnz espscn1
+        jr espscn9
+espscn7 call espleave
+espscn8 pop bc
+espscn9 ld a,2
+        ret
+
+;### ESPSCRD -> read the list that follows the 0 of a scan result, window is open
+espscrd xor a
+        ld (esp_scn),a
+        call espgtq             ;number of networks
+        ret c
+        ld (esp_scc),a
+        ld hl,esp_sctab
+        ld (esp_sce),hl
+espscr1 ld a,(esp_scc)
+        or a
+        ret z
+        dec a
+        ld (esp_scc),a
+        ld hl,(esp_sce)
+        inc hl
+        inc hl
+        ld (esp_snp),hl
+        xor a
+        ld (esp_scl),a
+espscr2 call espgtq             ;the name
+        ret c
+        or a
+        jr z,espscr4
+        ld c,a
+        ld a,(esp_scl)
+        cp 32
+        jr nc,espscr2           ;longer than 32, drop the rest
+        ld hl,(esp_snp)
+        ld (hl),c
+        inc hl
+        ld (esp_snp),hl
+        ld hl,esp_scl
+        inc (hl)
+        jr espscr2
+espscr4 call espgtq             ;O = open, E = encrypted
+        ret c
+        ld c,a
+        ld a,(esp_scn)
+        cp esp_scmax
+        jr nc,espscr1           ;table is full
+        ld a,(esp_scl)
+        or a
+        jr z,espscr1            ;hidden network
+        call espsdup
+        jr z,espscr1            ;this name is in the table already
+        ld hl,(esp_sce)
+        ld a,(esp_scl)
+        ld (hl),a
+        inc hl
+        ld a,c
+        cp "E"
+        ld a,0
+        jr nz,espscr5
+        inc a
+espscr5 ld (hl),a
+        ld hl,(esp_snp)
+        or a
+        jr z,espscr6
+        ld (hl)," "
+        inc hl
+        ld (hl),"*"
+        inc hl
+espscr6 ld (hl),0
+        ld hl,esp_scn
+        inc (hl)
+        ld hl,(esp_sce)
+        ld de,esp_scsiz
+        add hl,de
+        ld (esp_sce),hl
+        jr espscr1
+
+;### ESPSDUP -> is the name just read (at esp_sce+2, esp_scl long) in the table already?
+;### Output     ZF=1 yes
+;### Destroyed  AF,BC,DE,HL
+espsdup ld a,(esp_scn)
+        or a
+        jr nz,espsdu0
+        inc a                   ;table is empty, ZF=0
+        ret
+espsdu0 ld b,a
+        ld hl,esp_sctab
+espsdu1 ld a,(esp_scl)
+        cp (hl)
+        jr nz,espsdu4
+        push bc
+        push hl
+        inc hl
+        inc hl
+        ld de,(esp_sce)
+        inc de
+        inc de
+        ld b,a
+espsdu2 ld a,(de)
+        cp (hl)
+        jr nz,espsdu3
+        inc hl
+        inc de
+        djnz espsdu2
+        pop hl
+        pop bc
+        xor a                   ;same, ZF=1
+        ret
+espsdu3 pop hl
+        pop bc
+espsdu4 ld de,esp_scsiz
+        add hl,de
+        djnz espsdu1
+        ld a,1
+        or a                    ;ZF=0
+        ret
+
+;### ESPJOIN -> connect to an access point, takes up to 15 seconds
+;### Input      HL=table entry, DE=password (0 terminated, empty for an open network)
+;### Output     A=0 connected, 1 the ESP could not connect, 2 no answer
+;### Destroyed  all
+espjoin ld (esp_jent),hl
+        ld (esp_jpwd),de
+        ex de,hl
+        ld c,0
+espjoi0 ld a,(hl)
+        or a
+        jr z,espjoi1
+        inc hl
+        inc c
+        ld a,c
+        cp 64
+        jr c,espjoi0
+espjoi1 ld a,c
+        ld (esp_jpl),a
+        ld hl,(esp_jent)
+        ld a,(hl)
+        inc a
+        add c
+        ld (esp_jtl),a
+        call espenter
+        jr c,espjoi9
+        ld a,esp_cmd_clrfifo
+        ld (esp_mem_cmd),a
+        ld a,(esp_jtl)
+        ld l,a
+        ld h,0
+        ld a,"A"
+        call espcmd
+        ld hl,(esp_jent)
+        ld a,(hl)
+        ld b,a
+        inc hl
+        inc hl
+espjoi2 ld a,(hl)
+        call espsnd
+        inc hl
+        djnz espjoi2
+        xor a
+        call espsnd             ;end of the name
+        ld a,(esp_jpl)
+        or a
+        jr z,espjoi4
+        ld b,a
+        ld hl,(esp_jpwd)
+espjoi3 ld a,(hl)
+        call espsnd
+        inc hl
+        djnz espjoi3
+espjoi4 ld a,(esp_wdef)
+        push af
+        ld a,250
+        ld (esp_wdef),a
+        ld b,3                  ;up to 3 x 250 frames, the ESP gives up after 10 seconds
+espjoi5 push bc
+        ld a,"A"
+        call espqrs
+        pop bc
+        jr nc,espjoi6
+        djnz espjoi5
+        pop af
+        ld (esp_wdef),a
+        call espleave
+        jr espjoi9
+espjoi6 ld c,a
+        pop af
+        ld (esp_wdef),a
+        call espleave
+        ld a,c
+        or a
+        ret z
+        ld a,1
+        ret
+espjoi9 ld a,2
+        ret
+
+;### ESPDISC -> disconnect from the access point and forget it
+;### Output     A=0 done, 2 no answer
+;### Destroyed  all
+espdisc call espenter
+        jr c,espdis9
+        ld a,esp_cmd_clrfifo
+        ld (esp_mem_cmd),a
+        ld a,"a"
+        call espsnd
+        ld a,"a"
+        call espqrs
+        call espleave
+        jr c,espdis9
+        xor a
+        ret
+espdis9 ld a,2
+        ret
