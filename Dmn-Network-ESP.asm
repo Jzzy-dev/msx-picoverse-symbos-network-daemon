@@ -696,7 +696,7 @@ if ESPDEBUG=1
 endif
         scf
         ret
-espfin6 ld hl,esptxt2         ;found, the adapter line reads Adapter: ESP8266 WiFi
+espfin6 ld hl,esptxt2         ;found, the adapter line reads Adapter ESP8266 WiFi
         call esptext
 if ESPDEBUG=1
         call esplogtx
